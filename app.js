@@ -1,29 +1,11 @@
 // ============================================================
 // State
 // ============================================================
-let rawEntries = [];          // flat parsed entries
-let employeeGroups = {};      // { groupName: [emp1, emp2, ...] }
-let caseGroups = {};          // { groupName: ["client|case", ...] }
-let valueMode = 'billable';   // 'billable' | 'work'
-let ungroupedMode = 'individual'; // 'individual' | 'other'
-let dateFrom = null;
-let dateTo = null;
-
-// ============================================================
-// Column indices in the raw Excel (0-based)
-// ============================================================
-const COL = {
-    description: 0,
-    total: 10,
-    rate: 11,
-    billableHours: 13,
-    workHours: 15,
-    status: 16,
-    caseName: 21,
-    clientName: 27,
-    date: 37,
-    employee: 42
-};
+let rawEntries = [];
+let employeeGroups = {};
+let caseGroups = {};
+let valueMode = 'billable';
+let ungroupedMode = 'individual';
 
 // ============================================================
 // DOM refs
@@ -54,11 +36,17 @@ fileInput.addEventListener('change', (e) => {
 function handleFile(file) {
     const reader = new FileReader();
     reader.onload = (e) => {
-        const data = new Uint8Array(e.target.result);
-        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
-        parseReport(rows);
+        try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            // Use raw:true so numbers stay as numbers and dates stay as Date objects
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+            parseReport(rows);
+        } catch (err) {
+            console.error('Error reading file:', err);
+            alert('שגיאה בקריאת הקובץ: ' + err.message);
+        }
     };
     reader.readAsArrayBuffer(file);
 }
@@ -71,39 +59,84 @@ function parseReport(rows) {
     let currentEmployee = null;
     let currentDate = null;
 
-    // Data starts at row index 20 (row 21 in 1-based)
-    // Find header row first
-    let dataStartIdx = 0;
-    for (let i = 0; i < Math.min(rows.length, 25); i++) {
+    // Find header row by scanning for "עובד" in any cell
+    let headerRowIdx = -1;
+    let colMap = {};
+    for (let i = 0; i < Math.min(rows.length, 30); i++) {
         const row = rows[i];
-        if (row && row[COL.employee] === 'עובד') {
-            dataStartIdx = i + 1;
-            break;
+        if (!row) continue;
+        for (let j = 0; j < row.length; j++) {
+            if (row[j] === 'עובד') {
+                headerRowIdx = i;
+                break;
+            }
+        }
+        if (headerRowIdx >= 0) break;
+    }
+
+    if (headerRowIdx < 0) {
+        alert('לא נמצאה שורת כותרת בקובץ');
+        return;
+    }
+
+    // Build column map from header row
+    const headerRow = rows[headerRowIdx];
+    const headerNames = {
+        'תיאור': 'description',
+        'סה"כ': 'total',
+        'סה״כ': 'total',
+        'תעריף': 'rate',
+        'שעות חיוב': 'billableHours',
+        'שעות עבודה': 'workHours',
+        'סטטוס': 'status',
+        'תיק': 'caseName',
+        'לקוח': 'clientName',
+        'תאריך': 'date',
+        'עובד': 'employee'
+    };
+
+    for (let j = 0; j < headerRow.length; j++) {
+        const cell = headerRow[j];
+        if (cell && headerNames[cell]) {
+            colMap[headerNames[cell]] = j;
         }
     }
-    if (dataStartIdx === 0) dataStartIdx = 20;
+
+    console.log('Header row:', headerRowIdx, 'Column map:', colMap);
+
+    const dataStartIdx = headerRowIdx + 1;
 
     for (let i = dataStartIdx; i < rows.length; i++) {
         const row = rows[i];
-        if (!row || row.length === 0) continue;
+        if (!row) continue;
 
-        // Check for subtotal rows: "סה"כ עובד" or "סה"כ לקוח" etc.
-        const dateCell = row[COL.date];
-        if (typeof dateCell === 'string' && dateCell.includes('סה"כ')) continue;
+        // Check for subtotal rows
+        const dateCell = row[colMap.date];
+        if (typeof dateCell === 'string' && dateCell.includes('סה')) continue;
 
-        // Check if this is a duplicate subtotal row (has numbers in cols 10,13,15 but no description)
-        const desc = row[COL.description];
-        if (!desc && !row[COL.employee] && !row[COL.caseName]) continue;
+        const desc = row[colMap.description];
+        const empCell = row[colMap.employee];
+        const caseCell = row[colMap.caseName];
+        const clientCell = row[colMap.clientName];
+
+        // Skip rows that have no description, no employee, and no case (subtotal/blank rows)
+        if (!desc && !empCell && !caseCell) continue;
 
         // Update current employee if present
-        if (row[COL.employee]) {
-            currentEmployee = row[COL.employee];
+        if (empCell) {
+            currentEmployee = String(empCell).trim();
         }
 
         // Update current date if present
-        if (dateCell && typeof dateCell !== 'string') {
-            currentDate = dateCell;
-        } else if (dateCell && typeof dateCell === 'string') {
+        if (dateCell != null && typeof dateCell !== 'string') {
+            // Date object from SheetJS
+            if (dateCell instanceof Date) {
+                currentDate = dateCell;
+            } else if (typeof dateCell === 'number') {
+                // Excel serial date
+                currentDate = excelDateToJS(dateCell);
+            }
+        } else if (typeof dateCell === 'string' && dateCell.trim() && !dateCell.includes('סה')) {
             const parsed = parseDate(dateCell);
             if (parsed) currentDate = parsed;
         }
@@ -112,35 +145,37 @@ function parseReport(rows) {
         if (!desc) continue;
 
         // Must have hours
-        const billableHours = parseFloat(row[COL.billableHours]);
-        const workHours = parseFloat(row[COL.workHours]);
-        if (isNaN(billableHours) && isNaN(workHours)) continue;
-
-        const clientName = row[COL.clientName] || '';
-        const caseName = row[COL.caseName] || '';
+        const billableHours = toNum(row[colMap.billableHours]);
+        const workHours = toNum(row[colMap.workHours]);
+        if (billableHours === null && workHours === null) continue;
 
         rawEntries.push({
             employee: currentEmployee || '',
             date: currentDate,
-            description: desc,
-            client: clientName,
-            caseName: caseName,
-            caseKey: clientName + '|' + caseName,
-            status: row[COL.status] || '',
-            rate: parseFloat(row[COL.rate]) || 0,
+            description: String(desc),
+            client: clientCell ? String(clientCell) : '',
+            caseName: caseCell ? String(caseCell) : '',
+            caseKey: (clientCell ? String(clientCell) : '') + '|' + (caseCell ? String(caseCell) : ''),
+            status: row[colMap.status] ? String(row[colMap.status]) : '',
+            rate: toNum(row[colMap.rate]) || 0,
             billableHours: billableHours || 0,
             workHours: workHours || 0,
-            total: parseFloat(row[COL.total]) || 0
+            total: toNum(row[colMap.total]) || 0
         });
     }
 
+    console.log('Parsed entries:', rawEntries.length);
+
+    if (rawEntries.length === 0) {
+        alert('לא נמצאו רשומות בקובץ');
+        return;
+    }
+
     // Set date range bounds
-    const dates = rawEntries.filter(e => e.date).map(e => new Date(e.date));
+    const dates = rawEntries.filter(e => e.date).map(e => e.date.getTime());
     if (dates.length) {
-        const min = new Date(Math.min(...dates));
-        const max = new Date(Math.max(...dates));
-        $('#date-from').value = formatDateISO(min);
-        $('#date-to').value = formatDateISO(max);
+        $('#date-from').value = formatDateISO(new Date(Math.min(...dates)));
+        $('#date-to').value = formatDateISO(new Date(Math.max(...dates)));
     }
 
     // Show UI
@@ -153,13 +188,23 @@ function parseReport(rows) {
     renderPivot();
 }
 
+function toNum(val) {
+    if (val == null) return null;
+    if (typeof val === 'number') return val;
+    const n = parseFloat(val);
+    return isNaN(n) ? null : n;
+}
+
+function excelDateToJS(serial) {
+    const utcDays = Math.floor(serial - 25569);
+    return new Date(utcDays * 86400 * 1000);
+}
+
 function parseDate(val) {
     if (val instanceof Date) return val;
     if (typeof val === 'string') {
-        // Try various formats
         const d = new Date(val);
         if (!isNaN(d.getTime())) return d;
-        // Try dd/mm/yyyy
         const parts = val.split('/');
         if (parts.length === 3) {
             return new Date(parts[2], parts[1] - 1, parts[0]);
@@ -171,12 +216,16 @@ function parseDate(val) {
 function formatDateISO(d) {
     if (!d) return '';
     const dd = d instanceof Date ? d : new Date(d);
-    return dd.toISOString().split('T')[0];
+    const year = dd.getFullYear();
+    const month = String(dd.getMonth() + 1).padStart(2, '0');
+    const day = String(dd.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
 }
 
 function formatDateHebrew(d) {
     if (!d) return '';
     const dd = d instanceof Date ? d : new Date(d);
+    if (isNaN(dd.getTime())) return '';
     const day = String(dd.getDate()).padStart(2, '0');
     const month = String(dd.getMonth() + 1).padStart(2, '0');
     const year = dd.getFullYear();
@@ -191,13 +240,12 @@ function getFilteredEntries() {
     const from = $('#date-from').value;
     const to = $('#date-to').value;
     if (from) {
-        const fd = new Date(from);
-        entries = entries.filter(e => e.date && new Date(e.date) >= fd);
+        const fd = new Date(from + 'T00:00:00');
+        entries = entries.filter(e => e.date && e.date >= fd);
     }
     if (to) {
-        const td = new Date(to);
-        td.setHours(23, 59, 59);
-        entries = entries.filter(e => e.date && new Date(e.date) <= td);
+        const td = new Date(to + 'T23:59:59');
+        entries = entries.filter(e => e.date && e.date <= td);
     }
     return entries;
 }
@@ -225,12 +273,12 @@ function renderCleanTable() {
 
     thead.innerHTML = '<tr><th>עובד</th><th>תאריך</th><th>לקוח</th><th>תיק</th><th>תיאור</th><th>סטטוס</th><th>תעריף</th><th>שעות עבודה</th><th>שעות חיוב</th><th>סה"כ</th></tr>';
     tbody.innerHTML = entries.map(e => `<tr>
-        <td>${e.employee}</td>
+        <td>${esc(e.employee)}</td>
         <td>${formatDateHebrew(e.date)}</td>
-        <td>${e.client}</td>
-        <td>${e.caseName}</td>
-        <td>${e.description}</td>
-        <td>${e.status}</td>
+        <td>${esc(e.client)}</td>
+        <td>${esc(e.caseName)}</td>
+        <td>${esc(e.description)}</td>
+        <td>${esc(e.status)}</td>
         <td>${e.rate}</td>
         <td>${e.workHours}</td>
         <td>${e.billableHours}</td>
@@ -297,7 +345,7 @@ $('#new-emp-group-name').addEventListener('keydown', (e) => {
 });
 
 function getAllEmployees() {
-    return [...new Set(rawEntries.map(e => e.employee))].sort();
+    return [...new Set(rawEntries.map(e => e.employee))].filter(Boolean).sort();
 }
 
 function getAssignedEmployees() {
@@ -311,40 +359,62 @@ function renderEmployeeGroups() {
     const allEmps = getAllEmployees();
     const unassigned = allEmps.filter(e => !assigned.has(e));
 
-    // Render groups
     const groupsList = $('#emp-groups-list');
-    groupsList.innerHTML = Object.entries(employeeGroups).map(([name, members]) => `
-        <div class="group-card">
+    groupsList.innerHTML = Object.entries(employeeGroups).map(([name, members]) => {
+        const groupEl = document.createElement('div');
+        return `<div class="group-card">
             <div class="group-header">
-                <strong>${name}</strong>
-                <button onclick="removeEmpGroup('${escapeAttr(name)}')" title="מחק קבוצה">&times;</button>
+                <strong>${esc(name)}</strong>
+                <button data-action="remove-emp-group" data-name="${escData(name)}" title="מחק קבוצה">&times;</button>
             </div>
-            <div class="group-members" data-group="${escapeAttr(name)}" data-type="emp">
-                ${members.map(m => `<span class="member-tag" draggable="true" data-member="${escapeAttr(m)}" data-type="emp">
-                    ${m} <span class="remove-member" onclick="removeEmpMember('${escapeAttr(name)}','${escapeAttr(m)}')">&times;</span>
+            <div class="group-members" data-group="${escData(name)}" data-type="emp">
+                ${members.map(m => `<span class="member-tag" draggable="true" data-member="${escData(m)}" data-type="emp">
+                    ${esc(m)} <span class="remove-member" data-action="remove-emp-member" data-group="${escData(name)}" data-member="${escData(m)}">&times;</span>
                 </span>`).join('')}
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 
-    // Render unassigned
     const unassignedEl = $('#unassigned-employees');
-    unassignedEl.innerHTML = unassigned.map(e => `<span class="unassigned-tag" draggable="true" data-member="${escapeAttr(e)}" data-type="emp">${e}</span>`).join('');
+    unassignedEl.innerHTML = unassigned.map(e =>
+        `<span class="unassigned-tag" draggable="true" data-member="${escData(e)}" data-type="emp">${esc(e)}</span>`
+    ).join('');
 
     setupDragDrop('emp');
+    setupGroupClicks('emp');
 }
 
-window.removeEmpGroup = (name) => {
-    delete employeeGroups[name];
-    renderEmployeeGroups();
-    renderPivot();
-};
+function setupGroupClicks(type) {
+    const container = type === 'emp' ? $('#employee-groups') : $('#case-groups');
+    if (!container) return;
 
-window.removeEmpMember = (group, member) => {
-    employeeGroups[group] = employeeGroups[group].filter(m => m !== member);
-    renderEmployeeGroups();
-    renderPivot();
-};
+    container.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        const action = btn.dataset.action;
+        const name = btn.dataset.name;
+        const group = btn.dataset.group;
+        const member = btn.dataset.member;
+
+        if (action === 'remove-emp-group') {
+            delete employeeGroups[name];
+            renderEmployeeGroups();
+            renderPivot();
+        } else if (action === 'remove-emp-member') {
+            employeeGroups[group] = employeeGroups[group].filter(m => m !== member);
+            renderEmployeeGroups();
+            renderPivot();
+        } else if (action === 'remove-case-group') {
+            delete caseGroups[name];
+            renderCaseGroups();
+            renderPivot();
+        } else if (action === 'remove-case-member') {
+            caseGroups[group] = caseGroups[group].filter(m => m !== member);
+            renderCaseGroups();
+            renderPivot();
+        }
+    });
+}
 
 // ============================================================
 // Case Groups
@@ -382,7 +452,6 @@ function caseLabel(key) {
     const parts = key.split('|');
     const client = parts[0] || '';
     const cas = parts[1] || '';
-    // Shorten for display
     const clientShort = client.length > 30 ? client.substring(0, 30) + '...' : client;
     return `${clientShort} / ${cas}`;
 }
@@ -396,34 +465,25 @@ function renderCaseGroups() {
     groupsList.innerHTML = Object.entries(caseGroups).map(([name, members]) => `
         <div class="group-card">
             <div class="group-header">
-                <strong>${name}</strong>
-                <button onclick="removeCaseGroup('${escapeAttr(name)}')" title="מחק קבוצה">&times;</button>
+                <strong>${esc(name)}</strong>
+                <button data-action="remove-case-group" data-name="${escData(name)}" title="מחק קבוצה">&times;</button>
             </div>
-            <div class="group-members" data-group="${escapeAttr(name)}" data-type="case">
-                ${members.map(m => `<span class="member-tag" draggable="true" data-member="${escapeAttr(m)}" data-type="case">
-                    ${caseLabel(m)} <span class="remove-member" onclick="removeCaseMember('${escapeAttr(name)}','${escapeAttr(m)}')">&times;</span>
+            <div class="group-members" data-group="${escData(name)}" data-type="case">
+                ${members.map(m => `<span class="member-tag" draggable="true" data-member="${escData(m)}" data-type="case">
+                    ${esc(caseLabel(m))} <span class="remove-member" data-action="remove-case-member" data-group="${escData(name)}" data-member="${escData(m)}">&times;</span>
                 </span>`).join('')}
             </div>
         </div>
     `).join('');
 
     const unassignedEl = $('#unassigned-cases');
-    unassignedEl.innerHTML = unassigned.map(c => `<span class="unassigned-tag" draggable="true" data-member="${escapeAttr(c.key)}" data-type="case">${caseLabel(c.key)}</span>`).join('');
+    unassignedEl.innerHTML = unassigned.map(c =>
+        `<span class="unassigned-tag" draggable="true" data-member="${escData(c.key)}" data-type="case">${esc(caseLabel(c.key))}</span>`
+    ).join('');
 
     setupDragDrop('case');
+    setupGroupClicks('case');
 }
-
-window.removeCaseGroup = (name) => {
-    delete caseGroups[name];
-    renderCaseGroups();
-    renderPivot();
-};
-
-window.removeCaseMember = (group, member) => {
-    caseGroups[group] = caseGroups[group].filter(m => m !== member);
-    renderCaseGroups();
-    renderPivot();
-};
 
 // ============================================================
 // Drag & Drop
@@ -432,7 +492,6 @@ function setupDragDrop(type) {
     const container = type === 'emp' ? $('#employee-groups') : $('#case-groups');
     if (!container) return;
 
-    // Draggable tags
     container.querySelectorAll('[draggable="true"]').forEach(tag => {
         tag.addEventListener('dragstart', (e) => {
             e.dataTransfer.setData('text/plain', JSON.stringify({
@@ -443,7 +502,6 @@ function setupDragDrop(type) {
         });
     });
 
-    // Drop zones (group-members)
     container.querySelectorAll('.group-members').forEach(zone => {
         zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
         zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
@@ -454,12 +512,9 @@ function setupDragDrop(type) {
             if (payload.type !== type) return;
             const targetGroup = zone.dataset.group;
             const groups = type === 'emp' ? employeeGroups : caseGroups;
-
-            // Remove from old group if any
             if (payload.fromGroup && groups[payload.fromGroup]) {
                 groups[payload.fromGroup] = groups[payload.fromGroup].filter(m => m !== payload.member);
             }
-            // Add to new group
             if (!groups[targetGroup].includes(payload.member)) {
                 groups[targetGroup].push(payload.member);
             }
@@ -468,7 +523,6 @@ function setupDragDrop(type) {
         });
     });
 
-    // Drop zone for unassigned area
     const unassignedZone = type === 'emp' ? $('#unassigned-employees') : $('#unassigned-cases');
     unassignedZone.addEventListener('dragover', (e) => { e.preventDefault(); unassignedZone.classList.add('drag-over'); });
     unassignedZone.addEventListener('dragleave', () => unassignedZone.classList.remove('drag-over'));
@@ -495,43 +549,32 @@ function renderPivot() {
 
     const hourKey = valueMode === 'billable' ? 'billableHours' : 'workHours';
 
-    // Build column labels (employees / employee groups)
-    const empGroupMap = {};  // employee -> groupName
+    const empGroupMap = {};
     Object.entries(employeeGroups).forEach(([gName, members]) => {
         members.forEach(m => { empGroupMap[m] = gName; });
     });
 
     const colLabels = new Set();
-    const allEmps = getAllEmployees();
-    allEmps.forEach(emp => {
-        if (empGroupMap[emp]) {
-            colLabels.add(empGroupMap[emp]);
-        } else {
-            if (ungroupedMode === 'individual') colLabels.add(emp);
-            else colLabels.add('אחר');
-        }
+    getAllEmployees().forEach(emp => {
+        if (empGroupMap[emp]) colLabels.add(empGroupMap[emp]);
+        else if (ungroupedMode === 'individual') colLabels.add(emp);
+        else colLabels.add('אחר');
     });
     const cols = [...colLabels].sort();
 
-    // Build row labels (cases / case groups)
-    const caseGroupMap = {};  // caseKey -> groupName
+    const caseGroupMap = {};
     Object.entries(caseGroups).forEach(([gName, members]) => {
         members.forEach(m => { caseGroupMap[m] = gName; });
     });
 
     const rowLabels = new Set();
-    const allCases = getAllCases();
-    allCases.forEach(c => {
-        if (caseGroupMap[c.key]) {
-            rowLabels.add(caseGroupMap[c.key]);
-        } else {
-            if (ungroupedMode === 'individual') rowLabels.add(c.key);
-            else rowLabels.add('אחר');
-        }
+    getAllCases().forEach(c => {
+        if (caseGroupMap[c.key]) rowLabels.add(caseGroupMap[c.key]);
+        else if (ungroupedMode === 'individual') rowLabels.add(c.key);
+        else rowLabels.add('אחר');
     });
     const rows = [...rowLabels].sort();
 
-    // Build pivot data
     const pivotData = {};
     const rowTotals = {};
     const colTotals = {};
@@ -544,7 +587,6 @@ function renderPivot() {
         const col = empGroupMap[e.employee] || (ungroupedMode === 'individual' ? e.employee : 'אחר');
         const row = caseGroupMap[e.caseKey] || (ungroupedMode === 'individual' ? e.caseKey : 'אחר');
         const val = e[hourKey];
-
         if (!pivotData[row]) pivotData[row] = {};
         pivotData[row][col] = (pivotData[row][col] || 0) + val;
         rowTotals[row] = (rowTotals[row] || 0) + val;
@@ -552,20 +594,19 @@ function renderPivot() {
         grandTotal += val;
     });
 
-    // Render
     const thead = $('#pivot-table thead');
     const tbody = $('#pivot-table tbody');
 
     thead.innerHTML = `<tr>
         <th class="pivot-corner">תיק / עובד</th>
-        ${cols.map(c => `<th>${c}</th>`).join('')}
+        ${cols.map(c => `<th>${esc(c)}</th>`).join('')}
         <th class="pivot-total-header">סה"כ</th>
     </tr>`;
 
     tbody.innerHTML = rows.map(r => {
         const label = r.includes('|') ? caseLabel(r) : r;
         return `<tr>
-            <td><strong>${label}</strong></td>
+            <td><strong>${esc(label)}</strong></td>
             ${cols.map(c => {
                 const v = pivotData[r]?.[c] || 0;
                 return `<td class="pivot-value">${v ? v.toFixed(2) : '-'}</td>`;
@@ -667,6 +708,12 @@ function downloadExcel(data, filename) {
     XLSX.writeFile(wb, filename);
 }
 
-function escapeAttr(str) {
-    return str.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+function esc(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function escData(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
