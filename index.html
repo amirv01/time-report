@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ניתוח דוח שעות</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;600;700&family=Frank+Ruhl+Libre:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <div class="header-inner">
+            <h1>ניתוח דוח שעות</h1>
+            <p class="subtitle">כלי לניתוח וסיכום דוחות שעות עבודה</p>
+        </div>
+    </header>
+
+    <main>
+        <!-- Upload Section -->
+        <section id="upload-section" class="card">
+            <h2>העלאת דוח</h2>
+            <p>העלה קובץ Excel של דוח שעות מפורט (Rpt_TD_ByLawyerDate)</p>
+            <div class="upload-area" id="upload-area">
+                <div class="upload-icon">📄</div>
+                <p>גרור קובץ לכאן או לחץ לבחירה</p>
+                <input type="file" id="file-input" accept=".xlsx,.xls" />
+            </div>
+        </section>
+
+        <!-- Controls Section (hidden until file loaded) -->
+        <section id="controls-section" class="card hidden">
+            <h2>הגדרות</h2>
+            <div class="controls-row">
+                <div class="control-group">
+                    <label>ערך לסיכום:</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn active" data-value="billable">שעות חיוב</button>
+                        <button class="toggle-btn" data-value="work">שעות עבודה</button>
+                    </div>
+                </div>
+                <div class="control-group">
+                    <label>סינון תאריכים:</label>
+                    <div class="date-range">
+                        <input type="date" id="date-from" />
+                        <span>עד</span>
+                        <input type="date" id="date-to" />
+                        <button class="btn btn-small" id="clear-dates">נקה</button>
+                    </div>
+                </div>
+                <div class="control-group">
+                    <label>פריטים לא מקובצים:</label>
+                    <div class="toggle-group">
+                        <button class="toggle-btn active" data-value="individual">הצג בנפרד</button>
+                        <button class="toggle-btn" data-value="other">קבץ ל"אחר"</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tabs -->
+        <div id="tabs-section" class="hidden">
+            <div class="tabs">
+                <button class="tab active" data-tab="clean-table">טבלה שטוחה</button>
+                <button class="tab" data-tab="employee-groups">קבוצות עובדים</button>
+                <button class="tab" data-tab="case-groups">קבוצות תיקים</button>
+                <button class="tab" data-tab="pivot">טבלת ציר</button>
+            </div>
+        </div>
+
+        <!-- Clean Table Tab -->
+        <section id="clean-table" class="tab-content card">
+            <div class="section-header">
+                <h2>טבלה שטוחה</h2>
+                <button class="btn" id="download-clean">הורד Excel</button>
+            </div>
+            <div class="table-wrapper">
+                <table id="clean-table-data">
+                    <thead></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Employee Groups Tab -->
+        <section id="employee-groups" class="tab-content card hidden">
+            <div class="section-header">
+                <h2>קבוצות עובדים</h2>
+                <div class="btn-group">
+                    <button class="btn" id="download-emp-groups">הורד קבוצות</button>
+                    <button class="btn" id="upload-emp-groups">העלה קבוצות</button>
+                    <input type="file" id="emp-groups-file" accept=".xlsx,.xls" class="hidden-input" />
+                </div>
+            </div>
+            <div class="groups-container">
+                <div class="groups-panel">
+                    <h3>קבוצות</h3>
+                    <div class="add-group-row">
+                        <input type="text" id="new-emp-group-name" placeholder="שם קבוצה חדשה" />
+                        <button class="btn btn-small" id="add-emp-group">הוסף</button>
+                    </div>
+                    <div id="emp-groups-list" class="groups-list"></div>
+                </div>
+                <div class="members-panel">
+                    <h3>עובדים לא משויכים</h3>
+                    <div id="unassigned-employees" class="members-list"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Case Groups Tab -->
+        <section id="case-groups" class="tab-content card hidden">
+            <div class="section-header">
+                <h2>קבוצות תיקים</h2>
+                <div class="btn-group">
+                    <button class="btn" id="download-case-groups">הורד קבוצות</button>
+                    <button class="btn" id="upload-case-groups">העלה קבוצות</button>
+                    <input type="file" id="case-groups-file" accept=".xlsx,.xls" class="hidden-input" />
+                </div>
+            </div>
+            <div class="groups-container">
+                <div class="groups-panel">
+                    <h3>קבוצות</h3>
+                    <div class="add-group-row">
+                        <input type="text" id="new-case-group-name" placeholder="שם קבוצה חדשה" />
+                        <button class="btn btn-small" id="add-case-group">הוסף</button>
+                    </div>
+                    <div id="case-groups-list" class="groups-list"></div>
+                </div>
+                <div class="members-panel">
+                    <h3>תיקים לא משויכים</h3>
+                    <div id="unassigned-cases" class="members-list"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Pivot Table Tab -->
+        <section id="pivot" class="tab-content card hidden">
+            <div class="section-header">
+                <h2>טבלת ציר</h2>
+                <button class="btn" id="download-pivot">הורד Excel</button>
+            </div>
+            <div class="table-wrapper">
+                <table id="pivot-table">
+                    <thead></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>כלי פנימי לניתוח דוחות שעות</p>
+    </footer>
+
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
