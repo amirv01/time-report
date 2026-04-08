@@ -4,8 +4,13 @@
 let rawEntries = [];
 let employeeGroups = {};
 let caseGroups = {};
-let valueMode = 'billable';
-let ungroupedMode = 'individual';
+let valueMode = 'billable';       // 'billable' | 'work'
+let ungroupedMode = 'individual';  // 'individual' | 'other'
+let colMode = 'months';            // 'months' | 'employees'
+let groupEmployees = false;
+let groupCases = false;
+let selectedCaseGroups = new Set(); // which case groups to show in pivot
+let pivotChart = null;              // Chart.js instance
 
 // ============================================================
 // DOM refs
@@ -34,13 +39,13 @@ fileInput.addEventListener('change', (e) => {
 });
 
 function handleFile(file) {
+    $('#file-name').textContent = file.name;
     const reader = new FileReader();
     reader.onload = (e) => {
         try {
             const data = new Uint8Array(e.target.result);
             const workbook = XLSX.read(data, { type: 'array', cellDates: true });
             const sheet = workbook.Sheets[workbook.SheetNames[0]];
-            // Use raw:true so numbers stay as numbers and dates stay as Date objects
             const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
             parseReport(rows);
         } catch (err) {
@@ -59,58 +64,37 @@ function parseReport(rows) {
     let currentEmployee = null;
     let currentDate = null;
 
-    // Find header row by scanning for "עובד" in any cell
     let headerRowIdx = -1;
     let colMap = {};
     for (let i = 0; i < Math.min(rows.length, 30); i++) {
         const row = rows[i];
         if (!row) continue;
         for (let j = 0; j < row.length; j++) {
-            if (row[j] === 'עובד') {
-                headerRowIdx = i;
-                break;
-            }
+            if (row[j] === 'עובד') { headerRowIdx = i; break; }
         }
         if (headerRowIdx >= 0) break;
     }
 
-    if (headerRowIdx < 0) {
-        alert('לא נמצאה שורת כותרת בקובץ');
-        return;
-    }
+    if (headerRowIdx < 0) { alert('לא נמצאה שורת כותרת בקובץ'); return; }
 
-    // Build column map from header row
     const headerRow = rows[headerRowIdx];
     const headerNames = {
-        'תיאור': 'description',
-        'סה"כ': 'total',
-        'סה״כ': 'total',
-        'תעריף': 'rate',
-        'שעות חיוב': 'billableHours',
-        'שעות עבודה': 'workHours',
-        'סטטוס': 'status',
-        'תיק': 'caseName',
-        'לקוח': 'clientName',
-        'תאריך': 'date',
-        'עובד': 'employee'
+        'תיאור': 'description', 'סה"כ': 'total', 'סה״כ': 'total',
+        'תעריף': 'rate', 'שעות חיוב': 'billableHours', 'שעות עבודה': 'workHours',
+        'סטטוס': 'status', 'תיק': 'caseName', 'לקוח': 'clientName',
+        'תאריך': 'date', 'עובד': 'employee'
     };
-
     for (let j = 0; j < headerRow.length; j++) {
         const cell = headerRow[j];
-        if (cell && headerNames[cell]) {
-            colMap[headerNames[cell]] = j;
-        }
+        if (cell && headerNames[cell]) colMap[headerNames[cell]] = j;
     }
 
     console.log('Header row:', headerRowIdx, 'Column map:', colMap);
 
-    const dataStartIdx = headerRowIdx + 1;
-
-    for (let i = dataStartIdx; i < rows.length; i++) {
+    for (let i = headerRowIdx + 1; i < rows.length; i++) {
         const row = rows[i];
         if (!row) continue;
 
-        // Check for subtotal rows
         const dateCell = row[colMap.date];
         if (typeof dateCell === 'string' && dateCell.includes('סה')) continue;
 
@@ -119,32 +103,20 @@ function parseReport(rows) {
         const caseCell = row[colMap.caseName];
         const clientCell = row[colMap.clientName];
 
-        // Skip rows that have no description, no employee, and no case (subtotal/blank rows)
         if (!desc && !empCell && !caseCell) continue;
 
-        // Update current employee if present
-        if (empCell) {
-            currentEmployee = String(empCell).trim();
-        }
+        if (empCell) currentEmployee = String(empCell).trim();
 
-        // Update current date if present
         if (dateCell != null && typeof dateCell !== 'string') {
-            // Date object from SheetJS
-            if (dateCell instanceof Date) {
-                currentDate = dateCell;
-            } else if (typeof dateCell === 'number') {
-                // Excel serial date
-                currentDate = excelDateToJS(dateCell);
-            }
+            if (dateCell instanceof Date) currentDate = dateCell;
+            else if (typeof dateCell === 'number') currentDate = excelDateToJS(dateCell);
         } else if (typeof dateCell === 'string' && dateCell.trim() && !dateCell.includes('סה')) {
             const parsed = parseDate(dateCell);
             if (parsed) currentDate = parsed;
         }
 
-        // Must have a description to be a real entry
         if (!desc) continue;
 
-        // Must have hours
         const billableHours = toNum(row[colMap.billableHours]);
         const workHours = toNum(row[colMap.workHours]);
         if (billableHours === null && workHours === null) continue;
@@ -165,16 +137,9 @@ function parseReport(rows) {
     }
 
     console.log('Parsed entries:', rawEntries.length);
-    if (rawEntries.length > 0) {
-        console.log('Sample entry:', JSON.stringify(rawEntries[0], (k, v) => v instanceof Date ? v.toISOString() : v));
-    }
 
-    if (rawEntries.length === 0) {
-        alert('לא נמצאו רשומות בקובץ');
-        return;
-    }
+    if (rawEntries.length === 0) { alert('לא נמצאו רשומות בקובץ'); return; }
 
-    // Set date range bounds
     const validDates = rawEntries
         .filter(e => e.date instanceof Date && !isNaN(e.date.getTime()))
         .map(e => e.date.getTime());
@@ -182,16 +147,17 @@ function parseReport(rows) {
         $('#date-from').value = formatDateISO(new Date(Math.min(...validDates)));
         $('#date-to').value = formatDateISO(new Date(Math.max(...validDates)));
     } else {
-        // No valid dates — clear filters so nothing gets filtered out
         $('#date-from').value = '';
         $('#date-to').value = '';
     }
 
-    // Show UI
+    // Initialize case filter with all case groups + "אחר"
+    rebuildCaseFilter();
+
     try {
         $('#controls-section').classList.remove('hidden');
         $('#tabs-section').classList.remove('hidden');
-        showTab('clean-table');
+        showTab('pivot');
         renderCleanTable();
         renderEmployeeGroups();
         renderCaseGroups();
@@ -202,6 +168,37 @@ function parseReport(rows) {
     }
 }
 
+// ============================================================
+// Case filter checkboxes
+// ============================================================
+function rebuildCaseFilter() {
+    const container = $('#case-filter-list');
+    const groupNames = Object.keys(caseGroups);
+    const items = [...groupNames, 'אחר'];
+
+    // If selectedCaseGroups is empty, select all
+    if (selectedCaseGroups.size === 0) {
+        items.forEach(item => selectedCaseGroups.add(item));
+    }
+
+    container.innerHTML = items.map(name => {
+        const checked = selectedCaseGroups.has(name) ? 'checked' : '';
+        return `<label><input type="checkbox" value="${escData(name)}" ${checked} />${esc(name)}</label>`;
+    }).join('');
+
+    // Add event listeners
+    container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', () => {
+            if (cb.checked) selectedCaseGroups.add(cb.value);
+            else selectedCaseGroups.delete(cb.value);
+            renderPivot();
+        });
+    });
+}
+
+// ============================================================
+// Utility functions
+// ============================================================
 function toNum(val) {
     if (val == null) return null;
     if (typeof val === 'number') return val;
@@ -210,8 +207,7 @@ function toNum(val) {
 }
 
 function excelDateToJS(serial) {
-    const utcDays = Math.floor(serial - 25569);
-    return new Date(utcDays * 86400 * 1000);
+    return new Date((Math.floor(serial - 25569)) * 86400 * 1000);
 }
 
 function parseDate(val) {
@@ -220,9 +216,7 @@ function parseDate(val) {
         const d = new Date(val);
         if (!isNaN(d.getTime())) return d;
         const parts = val.split('/');
-        if (parts.length === 3) {
-            return new Date(parts[2], parts[1] - 1, parts[0]);
-        }
+        if (parts.length === 3) return new Date(parts[2], parts[1] - 1, parts[0]);
     }
     return null;
 }
@@ -231,137 +225,37 @@ function formatDateISO(d) {
     if (!d) return '';
     const dd = d instanceof Date ? d : new Date(d);
     if (isNaN(dd.getTime())) return '';
-    const year = dd.getFullYear();
-    const month = String(dd.getMonth() + 1).padStart(2, '0');
-    const day = String(dd.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    return `${dd.getFullYear()}-${String(dd.getMonth() + 1).padStart(2, '0')}-${String(dd.getDate()).padStart(2, '0')}`;
 }
 
 function formatDateHebrew(d) {
     if (!d) return '';
     const dd = d instanceof Date ? d : new Date(d);
     if (isNaN(dd.getTime())) return '';
-    const day = String(dd.getDate()).padStart(2, '0');
-    const month = String(dd.getMonth() + 1).padStart(2, '0');
-    const year = dd.getFullYear();
-    return `${day}/${month}/${year}`;
+    return `${String(dd.getDate()).padStart(2, '0')}/${String(dd.getMonth() + 1).padStart(2, '0')}/${dd.getFullYear()}`;
 }
 
-// ============================================================
-// Filtered entries
-// ============================================================
+function formatMonth(d) {
+    if (!d) return '';
+    const dd = d instanceof Date ? d : new Date(d);
+    if (isNaN(dd.getTime())) return '';
+    return `${String(dd.getMonth() + 1).padStart(2, '0')}/${dd.getFullYear()}`;
+}
+
 function getFilteredEntries() {
     let entries = rawEntries;
     const from = $('#date-from').value;
     const to = $('#date-to').value;
     if (from) {
         const fd = new Date(from + 'T00:00:00');
-        if (!isNaN(fd.getTime())) {
-            entries = entries.filter(e => !e.date || !(e.date instanceof Date) || e.date >= fd);
-        }
+        if (!isNaN(fd.getTime())) entries = entries.filter(e => !e.date || !(e.date instanceof Date) || e.date >= fd);
     }
     if (to) {
         const td = new Date(to + 'T23:59:59');
-        if (!isNaN(td.getTime())) {
-            entries = entries.filter(e => !e.date || !(e.date instanceof Date) || e.date <= td);
-        }
+        if (!isNaN(td.getTime())) entries = entries.filter(e => !e.date || !(e.date instanceof Date) || e.date <= td);
     }
     return entries;
 }
-
-// ============================================================
-// Tabs
-// ============================================================
-$$('.tab').forEach(tab => {
-    tab.addEventListener('click', () => showTab(tab.dataset.tab));
-});
-
-function showTab(tabId) {
-    $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
-    $$('.tab-content').forEach(tc => tc.classList.toggle('hidden', tc.id !== tabId));
-    if (tabId === 'pivot') renderPivot();
-}
-
-// ============================================================
-// Clean Table
-// ============================================================
-function renderCleanTable() {
-    const entries = getFilteredEntries();
-    const thead = $('#clean-table-data thead');
-    const tbody = $('#clean-table-data tbody');
-
-    thead.innerHTML = '<tr><th>עובד</th><th>תאריך</th><th>לקוח</th><th>תיק</th><th>תיאור</th><th>סטטוס</th><th>תעריף</th><th>שעות עבודה</th><th>שעות חיוב</th><th>סה"כ</th></tr>';
-    tbody.innerHTML = entries.map(e => `<tr>
-        <td>${esc(e.employee)}</td>
-        <td>${formatDateHebrew(e.date)}</td>
-        <td>${esc(e.client)}</td>
-        <td>${esc(e.caseName)}</td>
-        <td>${esc(e.description)}</td>
-        <td>${esc(e.status)}</td>
-        <td>${e.rate}</td>
-        <td>${e.workHours}</td>
-        <td>${e.billableHours}</td>
-        <td>${e.total}</td>
-    </tr>`).join('');
-}
-
-$('#download-clean').addEventListener('click', () => {
-    const entries = getFilteredEntries();
-    const data = entries.map(e => ({
-        'עובד': e.employee,
-        'תאריך': formatDateHebrew(e.date),
-        'לקוח': e.client,
-        'תיק': e.caseName,
-        'תיאור': e.description,
-        'סטטוס': e.status,
-        'תעריף': e.rate,
-        'שעות עבודה': e.workHours,
-        'שעות חיוב': e.billableHours,
-        'סה"כ': e.total
-    }));
-    downloadExcel(data, 'טבלה_שטוחה.xlsx');
-});
-
-// ============================================================
-// Toggle controls
-// ============================================================
-$$('.toggle-group').forEach(group => {
-    group.querySelectorAll('.toggle-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            group.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            const val = btn.dataset.value;
-            if (val === 'billable' || val === 'work') valueMode = val;
-            if (val === 'individual' || val === 'other') ungroupedMode = val;
-            renderPivot();
-        });
-    });
-});
-
-$('#date-from').addEventListener('change', () => { renderCleanTable(); renderPivot(); });
-$('#date-to').addEventListener('change', () => { renderCleanTable(); renderPivot(); });
-$('#clear-dates').addEventListener('click', () => {
-    $('#date-from').value = '';
-    $('#date-to').value = '';
-    renderCleanTable();
-    renderPivot();
-});
-
-// ============================================================
-// Employee Groups
-// ============================================================
-$('#add-emp-group').addEventListener('click', () => {
-    const name = $('#new-emp-group-name').value.trim();
-    if (!name || employeeGroups[name]) return;
-    employeeGroups[name] = [];
-    $('#new-emp-group-name').value = '';
-    renderEmployeeGroups();
-    renderPivot();
-});
-
-$('#new-emp-group-name').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') $('#add-emp-group').click();
-});
 
 function getAllEmployees() {
     return [...new Set(rawEntries.map(e => e.employee))].filter(Boolean).sort();
@@ -373,90 +267,10 @@ function getAssignedEmployees() {
     return assigned;
 }
 
-function renderEmployeeGroups() {
-    const assigned = getAssignedEmployees();
-    const allEmps = getAllEmployees();
-    const unassigned = allEmps.filter(e => !assigned.has(e));
-
-    const groupsList = $('#emp-groups-list');
-    groupsList.innerHTML = Object.entries(employeeGroups).map(([name, members]) => {
-        const groupEl = document.createElement('div');
-        return `<div class="group-card">
-            <div class="group-header">
-                <strong>${esc(name)}</strong>
-                <button data-action="remove-emp-group" data-name="${escData(name)}" title="מחק קבוצה">&times;</button>
-            </div>
-            <div class="group-members" data-group="${escData(name)}" data-type="emp">
-                ${members.map(m => `<span class="member-tag" draggable="true" data-member="${escData(m)}" data-type="emp">
-                    ${esc(m)} <span class="remove-member" data-action="remove-emp-member" data-group="${escData(name)}" data-member="${escData(m)}">&times;</span>
-                </span>`).join('')}
-            </div>
-        </div>`;
-    }).join('');
-
-    const unassignedEl = $('#unassigned-employees');
-    unassignedEl.innerHTML = unassigned.map(e =>
-        `<span class="unassigned-tag" draggable="true" data-member="${escData(e)}" data-type="emp">${esc(e)}</span>`
-    ).join('');
-
-    setupDragDrop('emp');
-    setupGroupClicks('emp');
-}
-
-function setupGroupClicks(type) {
-    const container = type === 'emp' ? $('#employee-groups') : $('#case-groups');
-    if (!container) return;
-
-    container.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-action]');
-        if (!btn) return;
-        const action = btn.dataset.action;
-        const name = btn.dataset.name;
-        const group = btn.dataset.group;
-        const member = btn.dataset.member;
-
-        if (action === 'remove-emp-group') {
-            delete employeeGroups[name];
-            renderEmployeeGroups();
-            renderPivot();
-        } else if (action === 'remove-emp-member') {
-            employeeGroups[group] = employeeGroups[group].filter(m => m !== member);
-            renderEmployeeGroups();
-            renderPivot();
-        } else if (action === 'remove-case-group') {
-            delete caseGroups[name];
-            renderCaseGroups();
-            renderPivot();
-        } else if (action === 'remove-case-member') {
-            caseGroups[group] = caseGroups[group].filter(m => m !== member);
-            renderCaseGroups();
-            renderPivot();
-        }
-    });
-}
-
-// ============================================================
-// Case Groups
-// ============================================================
-$('#add-case-group').addEventListener('click', () => {
-    const name = $('#new-case-group-name').value.trim();
-    if (!name || caseGroups[name]) return;
-    caseGroups[name] = [];
-    $('#new-case-group-name').value = '';
-    renderCaseGroups();
-    renderPivot();
-});
-
-$('#new-case-group-name').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') $('#add-case-group').click();
-});
-
 function getAllCases() {
     const cases = new Map();
     rawEntries.forEach(e => {
-        if (!cases.has(e.caseKey)) {
-            cases.set(e.caseKey, { client: e.client, caseName: e.caseName, key: e.caseKey });
-        }
+        if (!cases.has(e.caseKey)) cases.set(e.caseKey, { client: e.client, caseName: e.caseName, key: e.caseKey });
     });
     return [...cases.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
@@ -475,14 +289,210 @@ function caseLabel(key) {
     return `${clientShort} / ${cas}`;
 }
 
+function getAllMonths() {
+    const months = new Set();
+    rawEntries.forEach(e => {
+        const m = formatMonth(e.date);
+        if (m) months.add(m);
+    });
+    return [...months].sort();
+}
+
+// ============================================================
+// Tabs
+// ============================================================
+$$('.tab').forEach(tab => {
+    tab.addEventListener('click', () => showTab(tab.dataset.tab));
+});
+
+function showTab(tabId) {
+    $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
+    $$('.tab-content').forEach(tc => tc.classList.toggle('hidden', tc.id !== tabId));
+    if (tabId === 'pivot') renderPivot();
+    if (tabId === 'clean-table') renderCleanTable();
+}
+
+// ============================================================
+// Controls
+// ============================================================
+// Value toggle
+$('#value-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        $('#value-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        valueMode = btn.dataset.value;
+        renderPivot();
+    });
+});
+
+// Ungrouped toggle
+$('#ungrouped-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        $('#ungrouped-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        ungroupedMode = btn.dataset.value;
+        renderPivot();
+    });
+});
+
+// Column mode toggle (months/employees)
+$('#col-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        $('#col-mode-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        colMode = btn.dataset.value;
+        // Enable/disable group employees checkbox
+        const cb = $('#group-employees-cb');
+        cb.disabled = (colMode !== 'employees');
+        if (colMode !== 'employees') {
+            cb.checked = false;
+            groupEmployees = false;
+        }
+        renderPivot();
+    });
+});
+
+// Group employees checkbox
+$('#group-employees-cb').addEventListener('change', (e) => {
+    groupEmployees = e.target.checked;
+    renderPivot();
+});
+
+// Group cases checkbox
+$('#group-cases-cb').addEventListener('change', (e) => {
+    groupCases = e.target.checked;
+    rebuildCaseFilter();
+    renderPivot();
+});
+
+// Date controls
+$('#date-from').addEventListener('change', () => { renderCleanTable(); renderPivot(); });
+$('#date-to').addEventListener('change', () => { renderCleanTable(); renderPivot(); });
+$('#clear-dates').addEventListener('click', () => {
+    $('#date-from').value = '';
+    $('#date-to').value = '';
+    renderCleanTable();
+    renderPivot();
+});
+
+// ============================================================
+// Clean Table
+// ============================================================
+function renderCleanTable() {
+    const entries = getFilteredEntries();
+    const thead = $('#clean-table-data thead');
+    const tbody = $('#clean-table-data tbody');
+
+    thead.innerHTML = '<tr><th>עובד</th><th>תאריך</th><th>חודש</th><th>לקוח</th><th>תיק</th><th>תיאור</th><th>סטטוס</th><th>תעריף</th><th>שעות עבודה</th><th>שעות חיוב</th><th>סה"כ</th></tr>';
+    tbody.innerHTML = entries.map(e => `<tr>
+        <td>${esc(e.employee)}</td>
+        <td>${formatDateHebrew(e.date)}</td>
+        <td>${formatMonth(e.date)}</td>
+        <td>${esc(e.client)}</td>
+        <td>${esc(e.caseName)}</td>
+        <td>${esc(e.description)}</td>
+        <td>${esc(e.status)}</td>
+        <td>${e.rate}</td>
+        <td>${e.workHours}</td>
+        <td>${e.billableHours}</td>
+        <td>${e.total}</td>
+    </tr>`).join('');
+}
+
+$('#download-clean').addEventListener('click', () => {
+    const entries = getFilteredEntries();
+    const data = entries.map(e => ({
+        'עובד': e.employee, 'תאריך': formatDateHebrew(e.date), 'חודש': formatMonth(e.date),
+        'לקוח': e.client, 'תיק': e.caseName, 'תיאור': e.description,
+        'סטטוס': e.status, 'תעריף': e.rate, 'שעות עבודה': e.workHours,
+        'שעות חיוב': e.billableHours, 'סה"כ': e.total
+    }));
+    downloadExcel(data, 'נתונים_מלאים.xlsx');
+});
+
+// ============================================================
+// Employee Groups
+// ============================================================
+$('#add-emp-group').addEventListener('click', () => {
+    const name = $('#new-emp-group-name').value.trim();
+    if (!name || employeeGroups[name]) return;
+    employeeGroups[name] = [];
+    $('#new-emp-group-name').value = '';
+    renderEmployeeGroups();
+    renderPivot();
+});
+
+$('#new-emp-group-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('#add-emp-group').click();
+});
+
+function renderEmployeeGroups() {
+    const assigned = getAssignedEmployees();
+    const allEmps = getAllEmployees();
+    const unassigned = allEmps.filter(e => !assigned.has(e));
+
+    const groupsList = $('#emp-groups-list');
+    groupsList.innerHTML = Object.entries(employeeGroups).map(([name, members]) =>
+        `<div class="group-card">
+            <div class="group-header">
+                <strong>${esc(name)}</strong>
+                <button data-action="remove-emp-group" data-name="${escData(name)}" title="מחק קבוצה">&times;</button>
+            </div>
+            <div class="group-members" data-group="${escData(name)}" data-type="emp">
+                ${members.map(m => `<span class="member-tag" draggable="true" data-member="${escData(m)}" data-type="emp">
+                    ${esc(m)} <span class="remove-member" data-action="remove-emp-member" data-group="${escData(name)}" data-member="${escData(m)}">&times;</span>
+                </span>`).join('')}
+            </div>
+        </div>`
+    ).join('');
+
+    $('#unassigned-employees').innerHTML = unassigned.map(e =>
+        `<span class="unassigned-tag" draggable="true" data-member="${escData(e)}" data-type="emp">${esc(e)}</span>`
+    ).join('');
+
+    setupDragDrop('emp');
+    setupGroupClicks('emp');
+}
+
+function setupGroupClicks(type) {
+    const container = type === 'emp' ? $('#employee-groups') : $('#case-groups');
+    if (!container) return;
+    container.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        const action = btn.dataset.action;
+        if (action === 'remove-emp-group') { delete employeeGroups[btn.dataset.name]; renderEmployeeGroups(); renderPivot(); }
+        else if (action === 'remove-emp-member') { employeeGroups[btn.dataset.group] = employeeGroups[btn.dataset.group].filter(m => m !== btn.dataset.member); renderEmployeeGroups(); renderPivot(); }
+        else if (action === 'remove-case-group') { delete caseGroups[btn.dataset.name]; renderCaseGroups(); rebuildCaseFilter(); renderPivot(); }
+        else if (action === 'remove-case-member') { caseGroups[btn.dataset.group] = caseGroups[btn.dataset.group].filter(m => m !== btn.dataset.member); renderCaseGroups(); rebuildCaseFilter(); renderPivot(); }
+    });
+}
+
+// ============================================================
+// Case Groups
+// ============================================================
+$('#add-case-group').addEventListener('click', () => {
+    const name = $('#new-case-group-name').value.trim();
+    if (!name || caseGroups[name]) return;
+    caseGroups[name] = [];
+    $('#new-case-group-name').value = '';
+    renderCaseGroups();
+    rebuildCaseFilter();
+    renderPivot();
+});
+
+$('#new-case-group-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('#add-case-group').click();
+});
+
 function renderCaseGroups() {
     const assigned = getAssignedCases();
     const allCases = getAllCases();
     const unassigned = allCases.filter(c => !assigned.has(c.key));
 
     const groupsList = $('#case-groups-list');
-    groupsList.innerHTML = Object.entries(caseGroups).map(([name, members]) => `
-        <div class="group-card">
+    groupsList.innerHTML = Object.entries(caseGroups).map(([name, members]) =>
+        `<div class="group-card">
             <div class="group-header">
                 <strong>${esc(name)}</strong>
                 <button data-action="remove-case-group" data-name="${escData(name)}" title="מחק קבוצה">&times;</button>
@@ -492,11 +502,10 @@ function renderCaseGroups() {
                     ${esc(caseLabel(m))} <span class="remove-member" data-action="remove-case-member" data-group="${escData(name)}" data-member="${escData(m)}">&times;</span>
                 </span>`).join('')}
             </div>
-        </div>
-    `).join('');
+        </div>`
+    ).join('');
 
-    const unassignedEl = $('#unassigned-cases');
-    unassignedEl.innerHTML = unassigned.map(c =>
+    $('#unassigned-cases').innerHTML = unassigned.map(c =>
         `<span class="unassigned-tag" draggable="true" data-member="${escData(c.key)}" data-type="case">${esc(caseLabel(c.key))}</span>`
     ).join('');
 
@@ -514,8 +523,7 @@ function setupDragDrop(type) {
     container.querySelectorAll('[draggable="true"]').forEach(tag => {
         tag.addEventListener('dragstart', (e) => {
             e.dataTransfer.setData('text/plain', JSON.stringify({
-                member: tag.dataset.member,
-                type: tag.dataset.type,
+                member: tag.dataset.member, type: tag.dataset.type,
                 fromGroup: tag.closest('.group-members')?.dataset.group || null
             }));
         });
@@ -525,19 +533,13 @@ function setupDragDrop(type) {
         zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
         zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
         zone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            zone.classList.remove('drag-over');
+            e.preventDefault(); zone.classList.remove('drag-over');
             const payload = JSON.parse(e.dataTransfer.getData('text/plain'));
             if (payload.type !== type) return;
-            const targetGroup = zone.dataset.group;
             const groups = type === 'emp' ? employeeGroups : caseGroups;
-            if (payload.fromGroup && groups[payload.fromGroup]) {
-                groups[payload.fromGroup] = groups[payload.fromGroup].filter(m => m !== payload.member);
-            }
-            if (!groups[targetGroup].includes(payload.member)) {
-                groups[targetGroup].push(payload.member);
-            }
-            if (type === 'emp') renderEmployeeGroups(); else renderCaseGroups();
+            if (payload.fromGroup && groups[payload.fromGroup]) groups[payload.fromGroup] = groups[payload.fromGroup].filter(m => m !== payload.member);
+            if (!groups[zone.dataset.group].includes(payload.member)) groups[zone.dataset.group].push(payload.member);
+            if (type === 'emp') renderEmployeeGroups(); else { renderCaseGroups(); rebuildCaseFilter(); }
             renderPivot();
         });
     });
@@ -546,15 +548,12 @@ function setupDragDrop(type) {
     unassignedZone.addEventListener('dragover', (e) => { e.preventDefault(); unassignedZone.classList.add('drag-over'); });
     unassignedZone.addEventListener('dragleave', () => unassignedZone.classList.remove('drag-over'));
     unassignedZone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        unassignedZone.classList.remove('drag-over');
+        e.preventDefault(); unassignedZone.classList.remove('drag-over');
         const payload = JSON.parse(e.dataTransfer.getData('text/plain'));
         if (payload.type !== type) return;
         const groups = type === 'emp' ? employeeGroups : caseGroups;
-        if (payload.fromGroup && groups[payload.fromGroup]) {
-            groups[payload.fromGroup] = groups[payload.fromGroup].filter(m => m !== payload.member);
-        }
-        if (type === 'emp') renderEmployeeGroups(); else renderCaseGroups();
+        if (payload.fromGroup && groups[payload.fromGroup]) groups[payload.fromGroup] = groups[payload.fromGroup].filter(m => m !== payload.member);
+        if (type === 'emp') renderEmployeeGroups(); else { renderCaseGroups(); rebuildCaseFilter(); }
         renderPivot();
     });
 }
@@ -564,66 +563,104 @@ function setupDragDrop(type) {
 // ============================================================
 function renderPivot() {
     const entries = getFilteredEntries();
-    if (!entries.length) return;
+    if (!entries.length) {
+        $('#pivot-table thead').innerHTML = '';
+        $('#pivot-table tbody').innerHTML = '<tr><td>אין נתונים להצגה</td></tr>';
+        return;
+    }
 
     const hourKey = valueMode === 'billable' ? 'billableHours' : 'workHours';
 
-    const empGroupMap = {};
-    Object.entries(employeeGroups).forEach(([gName, members]) => {
-        members.forEach(m => { empGroupMap[m] = gName; });
-    });
+    // --- Build COLUMNS ---
+    let cols = [];
+    let getCol; // function: entry -> column label
 
-    const colLabels = new Set();
-    getAllEmployees().forEach(emp => {
-        if (empGroupMap[emp]) colLabels.add(empGroupMap[emp]);
-        else if (ungroupedMode === 'individual') colLabels.add(emp);
-        else colLabels.add('אחר');
-    });
-    const cols = [...colLabels].sort();
+    if (colMode === 'months') {
+        cols = getAllMonths();
+        getCol = (e) => formatMonth(e.date) || 'ללא תאריך';
+        if (!cols.includes('ללא תאריך') && entries.some(e => !formatMonth(e.date))) cols.push('ללא תאריך');
+    } else {
+        // employees mode
+        if (groupEmployees && Object.keys(employeeGroups).length > 0) {
+            const empGroupMap = {};
+            Object.entries(employeeGroups).forEach(([gName, members]) => {
+                members.forEach(m => { empGroupMap[m] = gName; });
+            });
+            const colSet = new Set();
+            getAllEmployees().forEach(emp => {
+                if (empGroupMap[emp]) colSet.add(empGroupMap[emp]);
+                else if (ungroupedMode === 'individual') colSet.add(emp);
+                else colSet.add('אחר');
+            });
+            cols = [...colSet].sort();
+            getCol = (e) => empGroupMap[e.employee] || (ungroupedMode === 'individual' ? e.employee : 'אחר');
+        } else {
+            cols = getAllEmployees();
+            getCol = (e) => e.employee || 'ללא עובד';
+            if (!cols.includes('ללא עובד') && entries.some(e => !e.employee)) cols.push('ללא עובד');
+        }
+    }
 
-    const caseGroupMap = {};
-    Object.entries(caseGroups).forEach(([gName, members]) => {
-        members.forEach(m => { caseGroupMap[m] = gName; });
-    });
+    // --- Build ROWS ---
+    let rowKeys = [];
+    let getRow; // function: entry -> row label
+    let rowLabel; // function: row key -> display label
 
-    const rowLabels = new Set();
-    getAllCases().forEach(c => {
-        if (caseGroupMap[c.key]) rowLabels.add(caseGroupMap[c.key]);
-        else if (ungroupedMode === 'individual') rowLabels.add(c.key);
-        else rowLabels.add('אחר');
-    });
-    const rows = [...rowLabels].sort();
+    if (groupCases && Object.keys(caseGroups).length > 0) {
+        const caseGroupMap = {};
+        Object.entries(caseGroups).forEach(([gName, members]) => {
+            members.forEach(m => { caseGroupMap[m] = gName; });
+        });
+        const rowSet = new Set();
+        getAllCases().forEach(c => {
+            if (caseGroupMap[c.key]) rowSet.add(caseGroupMap[c.key]);
+            else rowSet.add('אחר');
+        });
+        // Filter by selected case groups
+        rowKeys = [...rowSet].filter(r => selectedCaseGroups.has(r)).sort();
+        getRow = (e) => caseGroupMap[e.caseKey] || 'אחר';
+        rowLabel = (r) => r;
+    } else {
+        // Individual cases
+        const allCases = getAllCases();
+        rowKeys = allCases.map(c => c.key);
+        getRow = (e) => e.caseKey;
+        rowLabel = (r) => caseLabel(r);
+    }
 
+    // --- Build pivot data ---
     const pivotData = {};
     const rowTotals = {};
     const colTotals = {};
     let grandTotal = 0;
 
-    rows.forEach(r => { pivotData[r] = {}; rowTotals[r] = 0; });
+    rowKeys.forEach(r => { pivotData[r] = {}; rowTotals[r] = 0; });
     cols.forEach(c => { colTotals[c] = 0; });
 
     entries.forEach(e => {
-        const col = empGroupMap[e.employee] || (ungroupedMode === 'individual' ? e.employee : 'אחר');
-        const row = caseGroupMap[e.caseKey] || (ungroupedMode === 'individual' ? e.caseKey : 'אחר');
+        const col = getCol(e);
+        const row = getRow(e);
+        if (!pivotData[row]) return; // skip rows not in selected groups
         const val = e[hourKey];
-        if (!pivotData[row]) pivotData[row] = {};
         pivotData[row][col] = (pivotData[row][col] || 0) + val;
         rowTotals[row] = (rowTotals[row] || 0) + val;
         colTotals[col] = (colTotals[col] || 0) + val;
         grandTotal += val;
     });
 
+    // --- Render ---
+    const cornerLabel = colMode === 'months' ? 'תיק / חודש' : 'תיק / עובד';
     const thead = $('#pivot-table thead');
     const tbody = $('#pivot-table tbody');
 
     thead.innerHTML = `<tr>
-        <th class="pivot-corner">תיק / עובד</th>
+        <th class="pivot-corner">${cornerLabel}</th>
         ${cols.map(c => `<th>${esc(c)}</th>`).join('')}
         <th class="pivot-total-header">סה"כ</th>
     </tr>`;
 
-    tbody.innerHTML = rows.map(r => {
-        const label = r.includes('|') ? caseLabel(r) : r;
+    tbody.innerHTML = rowKeys.map(r => {
+        const label = rowLabel(r);
         return `<tr>
             <td><strong>${esc(label)}</strong></td>
             ${cols.map(c => {
@@ -637,6 +674,145 @@ function renderPivot() {
         ${cols.map(c => `<td class="pivot-value">${(colTotals[c] || 0).toFixed(2)}</td>`).join('')}
         <td class="pivot-value pivot-total">${grandTotal.toFixed(2)}</td>
     </tr>`;
+
+    // --- Render chart ---
+    renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals);
+}
+
+// ============================================================
+// Pivot Chart
+// ============================================================
+const CHART_COLORS = [
+    '#1a2a4a', '#b8964e', '#2c4066', '#d4b06a', '#4a7c9b', '#8b6914',
+    '#3d6b8e', '#c4a25c', '#1f3d5e', '#9ba3b0', '#5a8aad', '#7a6322',
+    '#6b9dc2', '#a0834a', '#345878', '#c8ccd4', '#4e8fb5', '#b39240',
+    '#2a5a7d', '#dcc07a', '#1e4d6e', '#e6c878', '#3a7099', '#8c7530'
+];
+
+function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals) {
+    const canvas = $('#pivot-chart');
+    if (!canvas) return;
+
+    // Destroy existing chart
+    if (pivotChart) {
+        pivotChart.destroy();
+        pivotChart = null;
+    }
+
+    if (colMode === 'employees') {
+        // Pie chart: hours split by employee/employee group
+        const labels = cols;
+        const data = cols.map(c => colTotals[c] || 0);
+        const colors = cols.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]);
+
+        pivotChart = new Chart(canvas, {
+            type: 'pie',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: data,
+                    backgroundColor: colors,
+                    borderColor: '#fff',
+                    borderWidth: 1.5
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'right',
+                        rtl: true,
+                        textDirection: 'rtl',
+                        labels: {
+                            font: { family: "'Assistant', sans-serif", size: 12 },
+                            padding: 12,
+                            usePointStyle: true,
+                            pointStyleWidth: 16
+                        }
+                    },
+                    tooltip: {
+                        rtl: true,
+                        textDirection: 'rtl',
+                        callbacks: {
+                            label: function(ctx) {
+                                const val = ctx.parsed;
+                                const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                const pct = total > 0 ? ((val / total) * 100).toFixed(1) : 0;
+                                return `${ctx.label}: ${val.toFixed(2)} (${pct}%)`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    } else {
+        // Bar chart: months on X, bars for each case/case group
+        const labels = cols; // months
+        const datasets = rowKeys.map((r, i) => {
+            const label = rowLabel(r);
+            const color = CHART_COLORS[i % CHART_COLORS.length];
+            return {
+                label: label,
+                data: cols.map(c => pivotData[r]?.[c] || 0),
+                backgroundColor: color,
+                borderColor: color,
+                borderWidth: 1,
+                borderRadius: 2
+            };
+        });
+
+        pivotChart = new Chart(canvas, {
+            type: 'bar',
+            data: { labels, datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        ticks: {
+                            font: { family: "'Assistant', sans-serif", size: 11 }
+                        },
+                        grid: { display: false }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            font: { family: "'Assistant', sans-serif", size: 11 }
+                        },
+                        title: {
+                            display: true,
+                            text: valueMode === 'billable' ? 'שעות חיוב' : 'שעות עבודה',
+                            font: { family: "'Assistant', sans-serif", size: 13, weight: '600' }
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        rtl: true,
+                        textDirection: 'rtl',
+                        labels: {
+                            font: { family: "'Assistant', sans-serif", size: 11 },
+                            padding: 10,
+                            usePointStyle: true,
+                            pointStyleWidth: 12,
+                            boxWidth: 12
+                        }
+                    },
+                    tooltip: {
+                        rtl: true,
+                        textDirection: 'rtl',
+                        callbacks: {
+                            label: function(ctx) {
+                                return `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
 }
 
 $('#download-pivot').addEventListener('click', () => {
@@ -666,8 +842,7 @@ $('#emp-groups-file').addEventListener('change', (e) => {
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
         employeeGroups = {};
         rows.forEach(r => {
-            const group = r['קבוצה'];
-            const member = r['עובד'];
+            const group = r['קבוצה'], member = r['עובד'];
             if (group && member) {
                 if (!employeeGroups[group]) employeeGroups[group] = [];
                 if (!employeeGroups[group].includes(member)) employeeGroups[group].push(member);
@@ -701,9 +876,7 @@ $('#case-groups-file').addEventListener('change', (e) => {
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
         caseGroups = {};
         rows.forEach(r => {
-            const group = r['קבוצה'];
-            const client = r['לקוח'] || '';
-            const cas = r['תיק'] || '';
+            const group = r['קבוצה'], client = r['לקוח'] || '', cas = r['תיק'] || '';
             const key = client + '|' + cas;
             if (group) {
                 if (!caseGroups[group]) caseGroups[group] = [];
@@ -711,6 +884,7 @@ $('#case-groups-file').addEventListener('change', (e) => {
             }
         });
         renderCaseGroups();
+        rebuildCaseFilter();
         renderPivot();
     };
     reader.readAsArrayBuffer(e.target.files[0]);

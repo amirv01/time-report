@@ -17,42 +17,77 @@
     </header>
 
     <main>
-        <!-- Upload Section -->
-        <section id="upload-section" class="card">
-            <h2>העלאת דוח</h2>
-            <p>העלה קובץ Excel של דוח שעות מפורט (Rpt_TD_ByLawyerDate)</p>
-            <div class="upload-area" id="upload-area">
-                <div class="upload-icon">📄</div>
-                <p>גרור קובץ לכאן או לחץ לבחירה</p>
-                <input type="file" id="file-input" accept=".xlsx,.xls" />
+        <!-- Upload Section (compact) -->
+        <section id="upload-section" class="card upload-card">
+            <div class="upload-row">
+                <span class="upload-label">העלאת דוח:</span>
+                <div class="upload-area" id="upload-area">
+                    <span class="upload-hint">גרור קובץ לכאן או לחץ לבחירה</span>
+                    <input type="file" id="file-input" accept=".xlsx,.xls" />
+                </div>
+                <span id="file-name" class="file-name"></span>
             </div>
         </section>
 
         <!-- Controls Section (hidden until file loaded) -->
         <section id="controls-section" class="card hidden">
-            <h2>הגדרות</h2>
-            <div class="controls-row">
-                <div class="control-group">
-                    <label>ערך לסיכום:</label>
-                    <div class="toggle-group">
-                        <button class="toggle-btn active" data-value="billable">שעות חיוב</button>
-                        <button class="toggle-btn" data-value="work">שעות עבודה</button>
+            <div class="settings-grid">
+                <!-- כללי -->
+                <div class="settings-panel">
+                    <h3>כללי</h3>
+                    <div class="control-group">
+                        <label>ערך לסיכום:</label>
+                        <div class="toggle-group" id="value-toggle">
+                            <button class="toggle-btn active" data-value="billable">שעות חיוב</button>
+                            <button class="toggle-btn" data-value="work">שעות עבודה</button>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label>סינון תאריכים:</label>
+                        <div class="date-range">
+                            <input type="date" id="date-from" />
+                            <span>עד</span>
+                            <input type="date" id="date-to" />
+                            <button class="btn btn-small" id="clear-dates">נקה</button>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label>פריטים לא מקובצים:</label>
+                        <div class="toggle-group" id="ungrouped-toggle">
+                            <button class="toggle-btn active" data-value="individual">הצג בנפרד</button>
+                            <button class="toggle-btn" data-value="other">קבץ ל"אחר"</button>
+                        </div>
                     </div>
                 </div>
-                <div class="control-group">
-                    <label>סינון תאריכים:</label>
-                    <div class="date-range">
-                        <input type="date" id="date-from" />
-                        <span>עד</span>
-                        <input type="date" id="date-to" />
-                        <button class="btn btn-small" id="clear-dates">נקה</button>
+                <!-- טורים -->
+                <div class="settings-panel">
+                    <h3>טורים</h3>
+                    <div class="control-group">
+                        <label>הצג בטורים:</label>
+                        <div class="toggle-group" id="col-mode-toggle">
+                            <button class="toggle-btn active" data-value="months">חודשים</button>
+                            <button class="toggle-btn" data-value="employees">עובדים</button>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="group-employees-cb" disabled />
+                            <span>עובדים לפי קבוצות</span>
+                        </label>
                     </div>
                 </div>
-                <div class="control-group">
-                    <label>פריטים לא מקובצים:</label>
-                    <div class="toggle-group">
-                        <button class="toggle-btn active" data-value="individual">הצג בנפרד</button>
-                        <button class="toggle-btn" data-value="other">קבץ ל"אחר"</button>
+                <!-- שורות -->
+                <div class="settings-panel">
+                    <h3>שורות</h3>
+                    <div class="control-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="group-cases-cb" />
+                            <span>תיקים לפי קבוצות</span>
+                        </label>
+                    </div>
+                    <div class="control-group" id="case-filter-group">
+                        <label>קבוצות תיקים להצגה:</label>
+                        <div id="case-filter-list" class="checkbox-list"></div>
                     </div>
                 </div>
             </div>
@@ -61,24 +96,27 @@
         <!-- Tabs -->
         <div id="tabs-section" class="hidden">
             <div class="tabs">
-                <button class="tab active" data-tab="clean-table">טבלה שטוחה</button>
+                <button class="tab active" data-tab="pivot">טבלת ציר</button>
                 <button class="tab" data-tab="employee-groups">קבוצות עובדים</button>
                 <button class="tab" data-tab="case-groups">קבוצות תיקים</button>
-                <button class="tab" data-tab="pivot">טבלת ציר</button>
+                <button class="tab" data-tab="clean-table">נתונים מלאים</button>
             </div>
         </div>
 
-        <!-- Clean Table Tab -->
-        <section id="clean-table" class="tab-content card">
+        <!-- Pivot Table Tab (first/default) -->
+        <section id="pivot" class="tab-content card">
             <div class="section-header">
-                <h2>טבלה שטוחה</h2>
-                <button class="btn" id="download-clean">הורד Excel</button>
+                <h2>טבלת ציר</h2>
+                <button class="btn" id="download-pivot">הורד Excel</button>
             </div>
             <div class="table-wrapper">
-                <table id="clean-table-data">
+                <table id="pivot-table">
                     <thead></thead>
                     <tbody></tbody>
                 </table>
+            </div>
+            <div id="chart-area" class="chart-area">
+                <canvas id="pivot-chart"></canvas>
             </div>
         </section>
 
@@ -134,14 +172,14 @@
             </div>
         </section>
 
-        <!-- Pivot Table Tab -->
-        <section id="pivot" class="tab-content card hidden">
+        <!-- Clean Table Tab (last, renamed) -->
+        <section id="clean-table" class="tab-content card hidden">
             <div class="section-header">
-                <h2>טבלת ציר</h2>
-                <button class="btn" id="download-pivot">הורד Excel</button>
+                <h2>נתונים מלאים</h2>
+                <button class="btn" id="download-clean">הורד Excel</button>
             </div>
             <div class="table-wrapper">
-                <table id="pivot-table">
+                <table id="clean-table-data">
                     <thead></thead>
                     <tbody></tbody>
                 </table>
@@ -154,6 +192,7 @@
     </footer>
 
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
