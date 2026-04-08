@@ -25,7 +25,7 @@
     --shadow-lg: 0 4px 20px rgba(26, 42, 74, 0.12);
     --radius: 6px;
     --font-body: 'Assistant', 'Segoe UI', sans-serif;
-    --font-heading: 'Frank Ruhl Libre', 'David', serif;
+    --font-heading: 'Assistant', 'Segoe UI', sans-serif;
 }
 
 body {

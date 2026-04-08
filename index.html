@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ניתוח דוח שעות</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;600;700&family=Frank+Ruhl+Libre:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -34,7 +34,7 @@
             <div class="settings-grid">
                 <!-- כללי -->
                 <div class="settings-panel">
-                    <h3>כללי</h3>
+                    <h3>הגדרות לטבלת סיכום</h3>
                     <div class="control-group">
                         <label>ערך לסיכום:</label>
                         <div class="toggle-group" id="value-toggle">
@@ -52,7 +52,7 @@
                         </div>
                     </div>
                     <div class="control-group">
-                        <label>פריטים לא מקובצים:</label>
+                        <label>תיקים ועובדים שאינם באף קבוצה:</label>
                         <div class="toggle-group" id="ungrouped-toggle">
                             <button class="toggle-btn active" data-value="individual">הצג בנפרד</button>
                             <button class="toggle-btn" data-value="other">קבץ ל"אחר"</button>
@@ -61,7 +61,7 @@
                 </div>
                 <!-- טורים -->
                 <div class="settings-panel">
-                    <h3>טורים</h3>
+                    <h3>הטורים בטבלת סיכום</h3>
                     <div class="control-group">
                         <label>הצג בטורים:</label>
                         <div class="toggle-group" id="col-mode-toggle">
@@ -78,10 +78,10 @@
                 </div>
                 <!-- שורות -->
                 <div class="settings-panel">
-                    <h3>שורות</h3>
+                    <h3>השורות בטבלת סיכום</h3>
                     <div class="control-group">
                         <label class="checkbox-label">
-                            <input type="checkbox" id="group-cases-cb" />
+                            <input type="checkbox" id="group-cases-cb" checked />
                             <span>תיקים לפי קבוצות</span>
                         </label>
                     </div>
@@ -96,7 +96,7 @@
         <!-- Tabs -->
         <div id="tabs-section" class="hidden">
             <div class="tabs">
-                <button class="tab active" data-tab="pivot">טבלת ציר</button>
+                <button class="tab active" data-tab="pivot">טבלת סיכום וגרף</button>
                 <button class="tab" data-tab="employee-groups">קבוצות עובדים</button>
                 <button class="tab" data-tab="case-groups">קבוצות תיקים</button>
                 <button class="tab" data-tab="clean-table">נתונים מלאים</button>
@@ -106,7 +106,7 @@
         <!-- Pivot Table Tab (first/default) -->
         <section id="pivot" class="tab-content card">
             <div class="section-header">
-                <h2>טבלת ציר</h2>
+                <h2>טבלת סיכום וגרף</h2>
                 <button class="btn" id="download-pivot">הורד Excel</button>
             </div>
             <div class="table-wrapper">

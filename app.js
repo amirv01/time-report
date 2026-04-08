@@ -8,7 +8,7 @@ let valueMode = 'billable';       // 'billable' | 'work'
 let ungroupedMode = 'individual';  // 'individual' | 'other'
 let colMode = 'months';            // 'months' | 'employees'
 let groupEmployees = false;
-let groupCases = false;
+let groupCases = true;
 let selectedCaseGroups = new Set(); // which case groups to show in pivot
 let pivotChart = null;              // Chart.js instance
 
@@ -163,6 +163,9 @@ function importCaseGroups(wb) {
     }
 
     caseGroups = newGroups;
+    // Select all new groups (+ אחר) in the filter
+    Object.keys(newGroups).forEach(g => selectedCaseGroups.add(g));
+    selectedCaseGroups.add('אחר');
     renderCaseGroups();
     rebuildCaseFilter();
     renderPivot();
