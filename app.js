@@ -32,34 +32,168 @@ uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag
 uploadArea.addEventListener('drop', (e) => {
     e.preventDefault();
     uploadArea.classList.remove('drag-over');
-    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
 });
 fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length) handleFile(e.target.files[0]);
+    if (e.target.files.length) handleFiles(e.target.files);
 });
 
+function handleFiles(fileList) {
+    for (const file of fileList) {
+        handleFile(file);
+    }
+}
+
 function handleFile(file) {
-    $('#file-name').textContent = file.name;
+    const name = file.name;
     const reader = new FileReader();
     reader.onload = (e) => {
         try {
             const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-            const sheet = workbook.Sheets[workbook.SheetNames[0]];
-            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
-            parseReport(rows);
+            const wb = XLSX.read(data, { type: 'array', cellDates: true });
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+
+            if (name.includes('עובדים')) {
+                importEmployeeGroups(wb);
+                showFileStatus(name, 'קבוצות עובדים נטענו');
+            } else if (name.includes('תיקים')) {
+                importCaseGroups(wb);
+                showFileStatus(name, 'קבוצות תיקים נטענו');
+            } else {
+                const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+                parseReport(rows);
+                showFileStatus(name, 'דוח שעות נטען');
+            }
         } catch (err) {
             console.error('Error reading file:', err);
-            alert('שגיאה בקריאת הקובץ: ' + err.message);
+            alert(`שגיאה בקריאת הקובץ "${name}": ${err.message}`);
         }
     };
     reader.readAsArrayBuffer(file);
+}
+
+function showFileStatus(name, msg) {
+    const el = $('#file-name');
+    el.textContent = `${msg} (${name})`;
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => { el.textContent = ''; }, 4000);
+}
+
+// ============================================================
+// Validation & Import: Employee Groups
+// ============================================================
+function importEmployeeGroups(wb) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+
+    // Validate structure
+    if (!rows.length) { alert('קובץ קבוצות עובדים ריק'); return; }
+    const first = rows[0];
+    if (!('קבוצה' in first) || !('עובד' in first)) {
+        alert('קובץ קבוצות עובדים לא תקין.\nנדרשות עמודות: "קבוצה", "עובד"');
+        return;
+    }
+
+    const errors = [];
+    const newGroups = {};
+    rows.forEach((r, i) => {
+        const group = r['קבוצה'];
+        const member = r['עובד'];
+        if (!group && !member) return; // skip empty rows
+        if (!group) { errors.push(`שורה ${i + 2}: חסר שם קבוצה`); return; }
+        if (!member) { errors.push(`שורה ${i + 2}: חסר שם עובד`); return; }
+        const g = String(group).trim();
+        const m = String(member).trim();
+        if (!newGroups[g]) newGroups[g] = [];
+        if (!newGroups[g].includes(m)) newGroups[g].push(m);
+    });
+
+    if (errors.length > 0 && Object.keys(newGroups).length === 0) {
+        alert('קובץ קבוצות עובדים לא תקין:\n' + errors.slice(0, 5).join('\n'));
+        return;
+    }
+    if (errors.length > 0) {
+        console.warn('Employee groups import warnings:', errors);
+    }
+
+    employeeGroups = newGroups;
+    renderEmployeeGroups();
+    renderPivot();
+    console.log(`Imported ${Object.keys(newGroups).length} employee groups`);
+}
+
+// ============================================================
+// Validation & Import: Case Groups
+// ============================================================
+function importCaseGroups(wb) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+
+    if (!rows.length) { alert('קובץ קבוצות תיקים ריק'); return; }
+    const first = rows[0];
+    if (!('קבוצה' in first)) {
+        alert('קובץ קבוצות תיקים לא תקין.\nנדרשת עמודה: "קבוצה"\nאופציונלי: "לקוח", "תיק"');
+        return;
+    }
+    // Must have at least one of לקוח or תיק
+    if (!('לקוח' in first) && !('תיק' in first)) {
+        alert('קובץ קבוצות תיקים לא תקין.\nנדרשת לפחות אחת מהעמודות: "לקוח", "תיק"');
+        return;
+    }
+
+    const errors = [];
+    const newGroups = {};
+    rows.forEach((r, i) => {
+        const group = r['קבוצה'];
+        const client = r['לקוח'] || '';
+        const cas = r['תיק'] || '';
+        if (!group && !client && !cas) return; // skip empty rows
+        if (!group) { errors.push(`שורה ${i + 2}: חסר שם קבוצה`); return; }
+        const g = String(group).trim();
+        const key = String(client).trim() + '|' + String(cas).trim();
+        if (key === '|') { errors.push(`שורה ${i + 2}: חסרים לקוח ותיק`); return; }
+        if (!newGroups[g]) newGroups[g] = [];
+        if (!newGroups[g].includes(key)) newGroups[g].push(key);
+    });
+
+    if (errors.length > 0 && Object.keys(newGroups).length === 0) {
+        alert('קובץ קבוצות תיקים לא תקין:\n' + errors.slice(0, 5).join('\n'));
+        return;
+    }
+    if (errors.length > 0) {
+        console.warn('Case groups import warnings:', errors);
+    }
+
+    caseGroups = newGroups;
+    renderCaseGroups();
+    rebuildCaseFilter();
+    renderPivot();
+    console.log(`Imported ${Object.keys(newGroups).length} case groups`);
+}
+
+// ============================================================
+// Validation: Time Report
+// ============================================================
+function validateReportHeaders(rows) {
+    // Scan for header row with "עובד"
+    for (let i = 0; i < Math.min(rows.length, 30); i++) {
+        const row = rows[i];
+        if (!row) continue;
+        for (let j = 0; j < row.length; j++) {
+            if (row[j] === 'עובד') return true;
+        }
+    }
+    return false;
 }
 
 // ============================================================
 // Parse Report
 // ============================================================
 function parseReport(rows) {
+    // Validate this looks like a time report
+    if (!validateReportHeaders(rows)) {
+        alert('הקובץ אינו דוח שעות תקין.\nלא נמצאו עמודות נדרשות (עובד, תאריך, שעות חיוב וכו\').\n\nאם זהו קובץ קבוצות, שנה את שמו ל:\n• קבוצות_עובדים.xlsx\n• קבוצות_תיקים.xlsx');
+        return;
+    }
+
     rawEntries = [];
     let currentEmployee = null;
     let currentDate = null;
@@ -75,7 +209,7 @@ function parseReport(rows) {
         if (headerRowIdx >= 0) break;
     }
 
-    if (headerRowIdx < 0) { alert('לא נמצאה שורת כותרת בקובץ'); return; }
+    if (headerRowIdx < 0) return; // already validated above
 
     const headerRow = rows[headerRowIdx];
     const headerNames = {
@@ -838,18 +972,12 @@ $('#emp-groups-file').addEventListener('change', (e) => {
     if (!e.target.files.length) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-        const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
-        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-        employeeGroups = {};
-        rows.forEach(r => {
-            const group = r['קבוצה'], member = r['עובד'];
-            if (group && member) {
-                if (!employeeGroups[group]) employeeGroups[group] = [];
-                if (!employeeGroups[group].includes(member)) employeeGroups[group].push(member);
-            }
-        });
-        renderEmployeeGroups();
-        renderPivot();
+        try {
+            const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+            importEmployeeGroups(wb);
+        } catch (err) {
+            alert('שגיאה בקריאת קובץ קבוצות עובדים: ' + err.message);
+        }
     };
     reader.readAsArrayBuffer(e.target.files[0]);
     e.target.value = '';
@@ -872,20 +1000,12 @@ $('#case-groups-file').addEventListener('change', (e) => {
     if (!e.target.files.length) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-        const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
-        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-        caseGroups = {};
-        rows.forEach(r => {
-            const group = r['קבוצה'], client = r['לקוח'] || '', cas = r['תיק'] || '';
-            const key = client + '|' + cas;
-            if (group) {
-                if (!caseGroups[group]) caseGroups[group] = [];
-                if (!caseGroups[group].includes(key)) caseGroups[group].push(key);
-            }
-        });
-        renderCaseGroups();
-        rebuildCaseFilter();
-        renderPivot();
+        try {
+            const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+            importCaseGroups(wb);
+        } catch (err) {
+            alert('שגיאה בקריאת קובץ קבוצות תיקים: ' + err.message);
+        }
     };
     reader.readAsArrayBuffer(e.target.files[0]);
     e.target.value = '';
