@@ -165,6 +165,9 @@ function parseReport(rows) {
     }
 
     console.log('Parsed entries:', rawEntries.length);
+    if (rawEntries.length > 0) {
+        console.log('Sample entry:', JSON.stringify(rawEntries[0], (k, v) => v instanceof Date ? v.toISOString() : v));
+    }
 
     if (rawEntries.length === 0) {
         alert('לא נמצאו רשומות בקובץ');
@@ -172,20 +175,31 @@ function parseReport(rows) {
     }
 
     // Set date range bounds
-    const dates = rawEntries.filter(e => e.date).map(e => e.date.getTime());
-    if (dates.length) {
-        $('#date-from').value = formatDateISO(new Date(Math.min(...dates)));
-        $('#date-to').value = formatDateISO(new Date(Math.max(...dates)));
+    const validDates = rawEntries
+        .filter(e => e.date instanceof Date && !isNaN(e.date.getTime()))
+        .map(e => e.date.getTime());
+    if (validDates.length) {
+        $('#date-from').value = formatDateISO(new Date(Math.min(...validDates)));
+        $('#date-to').value = formatDateISO(new Date(Math.max(...validDates)));
+    } else {
+        // No valid dates — clear filters so nothing gets filtered out
+        $('#date-from').value = '';
+        $('#date-to').value = '';
     }
 
     // Show UI
-    $('#controls-section').classList.remove('hidden');
-    $('#tabs-section').classList.remove('hidden');
-    showTab('clean-table');
-    renderCleanTable();
-    renderEmployeeGroups();
-    renderCaseGroups();
-    renderPivot();
+    try {
+        $('#controls-section').classList.remove('hidden');
+        $('#tabs-section').classList.remove('hidden');
+        showTab('clean-table');
+        renderCleanTable();
+        renderEmployeeGroups();
+        renderCaseGroups();
+        renderPivot();
+    } catch (err) {
+        console.error('Error rendering UI:', err);
+        alert('שגיאה בהצגת הנתונים: ' + err.message);
+    }
 }
 
 function toNum(val) {
@@ -216,6 +230,7 @@ function parseDate(val) {
 function formatDateISO(d) {
     if (!d) return '';
     const dd = d instanceof Date ? d : new Date(d);
+    if (isNaN(dd.getTime())) return '';
     const year = dd.getFullYear();
     const month = String(dd.getMonth() + 1).padStart(2, '0');
     const day = String(dd.getDate()).padStart(2, '0');
@@ -241,11 +256,15 @@ function getFilteredEntries() {
     const to = $('#date-to').value;
     if (from) {
         const fd = new Date(from + 'T00:00:00');
-        entries = entries.filter(e => e.date && e.date >= fd);
+        if (!isNaN(fd.getTime())) {
+            entries = entries.filter(e => !e.date || !(e.date instanceof Date) || e.date >= fd);
+        }
     }
     if (to) {
         const td = new Date(to + 'T23:59:59');
-        entries = entries.filter(e => e.date && e.date <= td);
+        if (!isNaN(td.getTime())) {
+            entries = entries.filter(e => !e.date || !(e.date instanceof Date) || e.date <= td);
+        }
     }
     return entries;
 }
