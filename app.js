@@ -434,7 +434,11 @@ function getAllMonths() {
         const m = formatMonth(e.date);
         if (m) months.add(m);
     });
-    return [...months].sort();
+    return [...months].sort((a, b) => {
+        const [mA, yA] = a.split('/').map(Number);
+        const [mB, yB] = b.split('/').map(Number);
+        return yA !== yB ? yA - yB : mA - mB;
+    });
 }
 
 // ============================================================
