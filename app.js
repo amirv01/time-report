@@ -11,6 +11,8 @@ let groupEmployees = false;
 let groupCases = true;
 let selectedCaseGroups = new Set(); // which case groups to show in pivot
 let pivotChart = null;              // Chart.js instance
+let totalsChart = null;             // Totals bar chart instance
+let subCharts = [];                 // Sub chart instances
 
 // ============================================================
 // DOM refs
@@ -812,8 +814,43 @@ function renderPivot() {
         <td class="pivot-value pivot-total">${grandTotal.toFixed(2)}</td>
     </tr>`;
 
+    // --- Build per-row-col-empgroup data for sub bar charts ---
+    let empGroupLabels = [];
+    let subBarData = {};  // { rowKey: { empGroup: { month: hours } } }
+    if (colMode === 'months') {
+        // Build employee group mapping
+        const empGMap = {};
+        if (Object.keys(employeeGroups).length > 0) {
+            Object.entries(employeeGroups).forEach(([gName, members]) => {
+                members.forEach(m => { empGMap[m] = gName; });
+            });
+        }
+        const egSet = new Set();
+        getAllEmployees().forEach(emp => {
+            const g = empGMap[emp] || (Object.keys(employeeGroups).length > 0 ? 'אחר' : emp);
+            // Only use groups, not individual employees for stacked bars
+            if (empGMap[emp]) egSet.add(empGMap[emp]);
+            else egSet.add('אחר');
+        });
+        empGroupLabels = [...egSet].sort();
+
+        rowKeys.forEach(r => {
+            subBarData[r] = {};
+            empGroupLabels.forEach(eg => { subBarData[r][eg] = {}; });
+        });
+
+        entries.forEach(e => {
+            const row = getRow(e);
+            if (!subBarData[row]) return;
+            const month = formatMonth(e.date) || 'ללא תאריך';
+            const eg = empGMap[e.employee] || 'אחר';
+            if (!subBarData[row][eg]) subBarData[row][eg] = {};
+            subBarData[row][eg][month] = (subBarData[row][eg][month] || 0) + e[hourKey];
+        });
+    }
+
     // --- Render chart ---
-    renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals);
+    renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGroupLabels, subBarData);
 }
 
 // ============================================================
@@ -826,130 +863,233 @@ const CHART_COLORS = [
     '#2a5a7d', '#dcc07a', '#1e4d6e', '#e6c878', '#3a7099', '#8c7530'
 ];
 
-function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals) {
+// Distinct palette for the cases/case-groups bar chart (greens/teals/warm tones)
+const CASE_COLORS = [
+    '#2e7d5f', '#c26a3d', '#3a8a8c', '#a85c90', '#6a9e3b', '#d4883e',
+    '#4c8eaf', '#9b6b4a', '#5aad7a', '#b5555a', '#3d7a6e', '#c49240',
+    '#7a6aad', '#5e9960', '#d47a6a', '#488080', '#b08a30', '#6a5e8a',
+    '#80b050', '#c07070', '#3a9070', '#d0a050', '#5a7ab0', '#a06a50'
+];
+
+function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGroupLabels, subBarData) {
     const canvas = $('#pivot-chart');
     if (!canvas) return;
 
-    // Destroy existing chart
-    if (pivotChart) {
-        pivotChart.destroy();
-        pivotChart = null;
-    }
+    // Destroy existing charts
+    if (pivotChart) { pivotChart.destroy(); pivotChart = null; }
+    if (totalsChart) { totalsChart.destroy(); totalsChart = null; }
+    subCharts.forEach(c => c.destroy());
+    subCharts = [];
+    $('#sub-charts-area').innerHTML = '';
+    $('#totals-chart-area').classList.add('hidden');
+
+    // Build consistent color map for columns
+    const colColorMap = {};
+    cols.forEach((c, i) => { colColorMap[c] = CHART_COLORS[i % CHART_COLORS.length]; });
 
     if (colMode === 'employees') {
-        // Pie chart: hours split by employee/employee group
-        const labels = cols;
-        const data = cols.map(c => colTotals[c] || 0);
-        const colors = cols.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]);
+        // Filter to only cols with data for main chart
+        const mainData = cols.map(c => colTotals[c] || 0);
+        const filtered = cols.map((c, i) => ({ label: c, value: mainData[i], color: colColorMap[c] })).filter(d => d.value > 0);
 
         pivotChart = new Chart(canvas, {
             type: 'pie',
             data: {
-                labels: labels,
-                datasets: [{
-                    data: data,
-                    backgroundColor: colors,
-                    borderColor: '#fff',
-                    borderWidth: 1.5
-                }]
+                labels: filtered.map(d => d.label),
+                datasets: [{ data: filtered.map(d => d.value), backgroundColor: filtered.map(d => d.color), borderColor: '#fff', borderWidth: 1.5 }]
             },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        position: 'right',
-                        rtl: true,
-                        textDirection: 'rtl',
-                        labels: {
-                            font: { family: "'Assistant', sans-serif", size: 12 },
-                            padding: 12,
-                            usePointStyle: true,
-                            pointStyleWidth: 16
-                        }
-                    },
-                    tooltip: {
-                        rtl: true,
-                        textDirection: 'rtl',
-                        callbacks: {
-                            label: function(ctx) {
-                                const val = ctx.parsed;
-                                const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
-                                const pct = total > 0 ? ((val / total) * 100).toFixed(1) : 0;
-                                return `${ctx.label}: ${val.toFixed(2)} (${pct}%)`;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    } else {
-        // Bar chart: months on X, bars for each case/case group
-        const labels = cols; // months
-        const datasets = rowKeys.map((r, i) => {
-            const label = rowLabel(r);
-            const color = CHART_COLORS[i % CHART_COLORS.length];
-            return {
-                label: label,
-                data: cols.map(c => pivotData[r]?.[c] || 0),
-                backgroundColor: color,
-                borderColor: color,
-                borderWidth: 1,
-                borderRadius: 2
-            };
+            options: pieOptions('right', 12)
         });
 
+        // Sub pie charts
+        renderSubCharts(cols, rowKeys, rowLabel, pivotData, colColorMap, 'pie');
+    } else {
+        // Main bar chart (uses CASE_COLORS to distinguish from employee-group charts below)
+        const datasets = rowKeys.map((r, i) => {
+            const color = CASE_COLORS[i % CASE_COLORS.length];
+            return { label: rowLabel(r), data: cols.map(c => pivotData[r]?.[c] || 0), backgroundColor: color, borderColor: color, borderWidth: 1, borderRadius: 2 };
+        });
         pivotChart = new Chart(canvas, {
             type: 'bar',
-            data: { labels, datasets },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: {
-                        ticks: {
-                            font: { family: "'Assistant', sans-serif", size: 11 }
-                        },
-                        grid: { display: false }
-                    },
-                    y: {
-                        beginAtZero: true,
-                        ticks: {
-                            font: { family: "'Assistant', sans-serif", size: 11 }
-                        },
-                        title: {
-                            display: true,
-                            text: valueMode === 'billable' ? 'שעות חיוב' : 'שעות עבודה',
-                            font: { family: "'Assistant', sans-serif", size: 13, weight: '600' }
-                        }
+            data: { labels: cols, datasets },
+            options: barOptions(false)
+        });
+
+        // Totals stacked bar chart — stacked by employee group across all cases
+        const totalsCanvas = $('#totals-chart');
+        $('#totals-chart-area').classList.remove('hidden');
+        const egColorMap = {};
+        empGroupLabels.forEach((eg, i) => { egColorMap[eg] = CHART_COLORS[i % CHART_COLORS.length]; });
+
+        // Aggregate subBarData across all rows: { empGroup: { month: hours } }
+        const totalsByEg = {};
+        empGroupLabels.forEach(eg => { totalsByEg[eg] = {}; });
+        Object.values(subBarData).forEach(egMap => {
+            Object.entries(egMap).forEach(([eg, months]) => {
+                Object.entries(months).forEach(([month, hrs]) => {
+                    if (!totalsByEg[eg]) totalsByEg[eg] = {};
+                    totalsByEg[eg][month] = (totalsByEg[eg][month] || 0) + hrs;
+                });
+            });
+        });
+
+        const totalsDatasets = empGroupLabels.map(eg => ({
+            label: eg,
+            data: cols.map(c => totalsByEg[eg]?.[c] || 0),
+            backgroundColor: egColorMap[eg],
+            borderColor: egColorMap[eg],
+            borderWidth: 1,
+            borderRadius: 2
+        }));
+        totalsChart = new Chart(totalsCanvas, {
+            type: 'bar',
+            data: { labels: cols, datasets: totalsDatasets },
+            options: barOptions(true)
+        });
+        renderSubCharts(cols, rowKeys, rowLabel, subBarData, egColorMap, 'bar', empGroupLabels);
+    }
+}
+
+function pieOptions(legendPos, fontSize) {
+    return {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                position: legendPos, rtl: true, textDirection: 'rtl',
+                labels: {
+                    font: { family: "'Assistant', sans-serif", size: fontSize },
+                    padding: legendPos === 'right' ? 12 : 6,
+                    usePointStyle: true, pointStyleWidth: legendPos === 'right' ? 16 : 10,
+                    boxWidth: legendPos === 'right' ? 16 : 10,
+                    filter: (item, chart) => {
+                        const val = chart.datasets[0].data[item.index];
+                        return val > 0;
                     }
-                },
-                plugins: {
-                    legend: {
-                        position: 'bottom',
-                        rtl: true,
-                        textDirection: 'rtl',
-                        labels: {
-                            font: { family: "'Assistant', sans-serif", size: 11 },
-                            padding: 10,
-                            usePointStyle: true,
-                            pointStyleWidth: 12,
-                            boxWidth: 12
-                        }
-                    },
-                    tooltip: {
-                        rtl: true,
-                        textDirection: 'rtl',
-                        callbacks: {
-                            label: function(ctx) {
-                                return `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}`;
-                            }
-                        }
+                }
+            },
+            tooltip: {
+                rtl: true, textDirection: 'rtl',
+                callbacks: {
+                    label: function(ctx) {
+                        const val = ctx.parsed;
+                        const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                        const pct = total > 0 ? ((val / total) * 100).toFixed(1) : 0;
+                        return `${ctx.label}: ${val.toFixed(2)} (${pct}%)`;
                     }
                 }
             }
+        }
+    };
+}
+
+function barOptions(stacked) {
+    return {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+            x: {
+                stacked: stacked,
+                ticks: { font: { family: "'Assistant', sans-serif", size: 11 } },
+                grid: { display: false }
+            },
+            y: {
+                stacked: stacked,
+                beginAtZero: true,
+                ticks: { font: { family: "'Assistant', sans-serif", size: 11 } },
+                title: { display: true, text: valueMode === 'billable' ? 'שעות חיוב' : 'שעות עבודה', font: { family: "'Assistant', sans-serif", size: 13, weight: '600' } }
+            }
+        },
+        plugins: {
+            legend: {
+                position: 'bottom', rtl: true, textDirection: 'rtl',
+                labels: { font: { family: "'Assistant', sans-serif", size: 11 }, padding: 10, usePointStyle: true, pointStyleWidth: 12, boxWidth: 12 }
+            },
+            tooltip: {
+                rtl: true, textDirection: 'rtl',
+                callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}` }
+            }
+        }
+    };
+}
+
+function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, empGroupLabels) {
+    const container = $('#sub-charts-area');
+    if (!container || rowKeys.length === 0) return;
+
+    // Filter to rows with data
+    const validRows = rowKeys.filter(r => {
+        if (chartType === 'pie') {
+            return cols.some(c => (dataMap[r]?.[c] || 0) > 0);
+        } else {
+            return empGroupLabels.some(eg => cols.some(c => (dataMap[r]?.[eg]?.[c] || 0) > 0));
+        }
+    });
+
+    const BATCH = 4;
+    let shown = 0;
+
+    function showNextBatch() {
+        const batch = validRows.slice(shown, shown + BATCH);
+        batch.forEach(r => {
+            const label = rowLabel(r);
+            const card = document.createElement('div');
+            card.className = 'sub-chart-card';
+            card.innerHTML = `<h4>${esc(label)}</h4><canvas></canvas>`;
+            // Insert before the "show more" button if it exists
+            const moreBtn = container.querySelector('.show-more-btn');
+            if (moreBtn) container.insertBefore(card, moreBtn);
+            else container.appendChild(card);
+
+            const subCanvas = card.querySelector('canvas');
+
+            if (chartType === 'pie') {
+                const data = cols.map(c => dataMap[r]?.[c] || 0);
+                // Only include cols with data, but keep consistent colors
+                const filtered = cols.map((c, i) => ({ label: c, value: data[i], color: colorMap[c] })).filter(d => d.value > 0);
+                const chart = new Chart(subCanvas, {
+                    type: 'pie',
+                    data: {
+                        labels: filtered.map(d => d.label),
+                        datasets: [{ data: filtered.map(d => d.value), backgroundColor: filtered.map(d => d.color), borderColor: '#fff', borderWidth: 1 }]
+                    },
+                    options: pieOptions('bottom', 10)
+                });
+                subCharts.push(chart);
+            } else {
+                // Stacked bar: months on X, one dataset per employee group
+                const datasets = empGroupLabels.map(eg => ({
+                    label: eg,
+                    data: cols.map(c => dataMap[r]?.[eg]?.[c] || 0),
+                    backgroundColor: colorMap[eg],
+                    borderColor: colorMap[eg],
+                    borderWidth: 1
+                })).filter(ds => ds.data.some(v => v > 0));
+
+                const chart = new Chart(subCanvas, {
+                    type: 'bar',
+                    data: { labels: cols, datasets },
+                    options: barOptions(true)
+                });
+                subCharts.push(chart);
+            }
         });
+
+        shown += batch.length;
+
+        // Remove old button
+        const oldBtn = container.querySelector('.show-more-btn');
+        if (oldBtn) oldBtn.remove();
+
+        // Add "show more" button if there are more
+        if (shown < validRows.length) {
+            const btn = document.createElement('button');
+            btn.className = 'btn show-more-btn';
+            btn.textContent = 'הצג גרפים נוספים...';
+            btn.addEventListener('click', showNextBatch);
+            container.appendChild(btn);
+        }
     }
+
+    showNextBatch();
 }
 
 $('#download-pivot').addEventListener('click', () => {

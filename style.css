@@ -460,6 +460,35 @@ tbody tr:nth-child(even):hover {
     width: 100% !important;
 }
 
+/* Sub-charts grid */
+.sub-charts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+
+.sub-chart-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem;
+    background: var(--white);
+}
+
+.sub-chart-card h4 {
+    font-family: var(--font-heading);
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--navy);
+    text-align: center;
+    margin-bottom: 0.5rem;
+}
+
+.sub-chart-card canvas {
+    max-height: 280px;
+    width: 100% !important;
+}
+
 /* Groups UI */
 .groups-container {
     display: grid;
