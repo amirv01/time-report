@@ -1,3 +1,6 @@
+// Register Chart.js datalabels plugin
+if (window.ChartDataLabels) Chart.register(ChartDataLabels);
+
 // ============================================================
 // State
 // ============================================================
@@ -892,15 +895,17 @@ function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGrou
     cols.forEach((c, i) => { colColorMap[c] = CHART_COLORS[i % CHART_COLORS.length]; });
 
     if (colMode === 'employees') {
-        // Filter to only cols with data for main chart
+        // Include ALL employees in every pie chart (zeros hidden by legend filter)
+        // so that colors are always consistent across main + sub charts
+        const allLabels = cols;
+        const allColors = cols.map(c => colColorMap[c]);
         const mainData = cols.map(c => colTotals[c] || 0);
-        const filtered = cols.map((c, i) => ({ label: c, value: mainData[i], color: colColorMap[c] })).filter(d => d.value > 0);
 
         pivotChart = new Chart(canvas, {
             type: 'pie',
             data: {
-                labels: filtered.map(d => d.label),
-                datasets: [{ data: filtered.map(d => d.value), backgroundColor: filtered.map(d => d.color), borderColor: '#fff', borderWidth: 1.5 }]
+                labels: allLabels,
+                datasets: [{ data: mainData, backgroundColor: allColors, borderColor: '#fff', borderWidth: 1.5 }]
             },
             options: pieOptions('right', 12)
         });
@@ -981,6 +986,20 @@ function pieOptions(legendPos, fontSize) {
                         return `${ctx.label}: ${val.toFixed(2)} (${pct}%)`;
                     }
                 }
+            },
+            datalabels: {
+                color: '#fff',
+                font: { family: "'Assistant', sans-serif", size: fontSize, weight: 'bold' },
+                formatter: (value, ctx) => {
+                    const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                    const pct = total > 0 ? (value / total) * 100 : 0;
+                    return pct >= 5 ? pct.toFixed(0) + '%' : '';
+                },
+                display: (ctx) => {
+                    const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                    const pct = total > 0 ? (ctx.dataset.data[ctx.dataIndex] / total) * 100 : 0;
+                    return pct >= 5;
+                }
             }
         }
     };
@@ -1010,7 +1029,8 @@ function barOptions(stacked) {
             tooltip: {
                 rtl: true, textDirection: 'rtl',
                 callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}` }
-            }
+            },
+            datalabels: { display: false }
         }
     };
 }
@@ -1046,14 +1066,14 @@ function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, 
             const subCanvas = card.querySelector('canvas');
 
             if (chartType === 'pie') {
+                // Include ALL cols so colors stay consistent; zeros hidden by legend filter
                 const data = cols.map(c => dataMap[r]?.[c] || 0);
-                // Only include cols with data, but keep consistent colors
-                const filtered = cols.map((c, i) => ({ label: c, value: data[i], color: colorMap[c] })).filter(d => d.value > 0);
+                const colors = cols.map(c => colorMap[c]);
                 const chart = new Chart(subCanvas, {
                     type: 'pie',
                     data: {
-                        labels: filtered.map(d => d.label),
-                        datasets: [{ data: filtered.map(d => d.value), backgroundColor: filtered.map(d => d.color), borderColor: '#fff', borderWidth: 1 }]
+                        labels: cols,
+                        datasets: [{ data: data, backgroundColor: colors, borderColor: '#fff', borderWidth: 1 }]
                     },
                     options: pieOptions('bottom', 10)
                 });
@@ -1520,3 +1540,22 @@ function escData(str) {
     if (!str) return '';
     return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+// ============================================================
+// Visitor Counter
+// ============================================================
+(async function() {
+    const el = $('#visitor-count');
+    if (!el) return;
+    try {
+        const resp = await fetch('https://api.counterapi.dev/v1/amirv01-time-report/visits/up');
+        if (resp.ok) {
+            const data = await resp.json();
+            el.textContent = data.count != null ? data.count.toLocaleString() : '—';
+        } else {
+            el.textContent = '—';
+        }
+    } catch (e) {
+        el.textContent = '—';
+    }
+})();

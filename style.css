@@ -653,6 +653,12 @@ footer {
     font-size: 0.8rem;
 }
 
+footer .footer-meta {
+    margin-top: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--gray-500, #888);
+}
+
 /* Responsive */
 @media (max-width: 900px) {
     .settings-grid {
