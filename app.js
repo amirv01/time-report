@@ -1103,6 +1103,349 @@ $('#download-pivot').addEventListener('click', () => {
 });
 
 // ============================================================
+// PDF Report Generation
+// ============================================================
+
+$('#download-pdf').addEventListener('click', async () => {
+    const entries = getFilteredEntries();
+    if (!entries.length) { alert('אין נתונים להצגה'); return; }
+
+    const btn = $('#download-pdf');
+    btn.disabled = true;
+    btn.textContent = '...מייצר דוח';
+
+    try {
+        await generatePdfReport(entries);
+    } catch (e) {
+        console.error('PDF generation error:', e);
+        alert('שגיאה ביצירת הדוח: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'דוח מודפס';
+    }
+});
+
+async function captureElement(el, scale) {
+    // Use html2canvas to capture a DOM element as an image
+    const canvas = await html2canvas(el, {
+        scale: scale || 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+    });
+    return canvas;
+}
+
+async function generatePdfReport(entries) {
+    const { jsPDF } = window.jspdf;
+
+    // --- Gather metadata ---
+    const fromVal = $('#date-from').value;
+    const toVal = $('#date-to').value;
+    let dateRange = '';
+    if (fromVal && toVal) dateRange = `${formatDateHebrew(new Date(fromVal + 'T00:00:00'))} - ${formatDateHebrew(new Date(toVal + 'T00:00:00'))}`;
+    else if (fromVal) dateRange = `${formatDateHebrew(new Date(fromVal + 'T00:00:00'))} ואילך`;
+    else if (toVal) dateRange = `עד ${formatDateHebrew(new Date(toVal + 'T00:00:00'))}`;
+    else {
+        const dates = entries.filter(e => e.date instanceof Date && !isNaN(e.date.getTime())).map(e => e.date);
+        if (dates.length) {
+            const minD = new Date(Math.min(...dates.map(d => d.getTime())));
+            const maxD = new Date(Math.max(...dates.map(d => d.getTime())));
+            dateRange = `${formatDateHebrew(minD)} - ${formatDateHebrew(maxD)}`;
+        }
+    }
+
+    const clients = [...new Set(entries.map(e => e.client).filter(Boolean))].sort();
+    let clientStr = clients.slice(0, 3).join(', ');
+    if (clients.length > 3) clientStr += ' ...';
+
+    // --- Determine orientation based on pivot table width ---
+    const pivotTable = $('#pivot-table');
+    const colCount = pivotTable.querySelectorAll('thead th').length;
+    const orientation = colCount > 7 ? 'landscape' : 'portrait';
+
+    const doc = new jsPDF({ orientation, unit: 'mm', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const margin = 12;
+    const contentW = pageW - margin * 2;
+    let curY = margin;
+
+    function ensureSpace(needed) {
+        if (curY + needed > pageH - margin - 10) {
+            doc.addPage();
+            curY = margin;
+        }
+    }
+
+    // --- Helper: add an image from a canvas, fitting within given width/maxHeight ---
+    function addImage(imgCanvas, widthMm, maxHeightMm) {
+        const ratio = imgCanvas.height / imgCanvas.width;
+        let imgW = widthMm;
+        let imgH = imgW * ratio;
+        if (imgH > maxHeightMm) {
+            imgH = maxHeightMm;
+            imgW = imgH / ratio;
+        }
+        const imgData = imgCanvas.toDataURL('image/png');
+        const xOffset = margin + (contentW - imgW) / 2;
+        doc.addImage(imgData, 'PNG', xOffset, curY, imgW, imgH);
+        curY += imgH + 3;
+    }
+
+    // --- Title (rendered as a temporary DOM element, captured as image) ---
+    const titleParts = ['סיכום דוח שעות'];
+    if (dateRange) titleParts.push(dateRange);
+    if (clientStr) titleParts.push(clientStr);
+    const titleText = titleParts.join(' || ');
+
+    const titleEl = document.createElement('div');
+    titleEl.style.cssText = `
+        font-family: 'Assistant', sans-serif; font-size: 18px; font-weight: 700;
+        color: #1a2a4a; text-align: center; padding: 8px 16px;
+        direction: rtl; background: white; width: ${Math.round(contentW * 3.78)}px;
+    `;
+    titleEl.textContent = titleText;
+    document.body.appendChild(titleEl);
+    const titleCanvas = await captureElement(titleEl, 2);
+    document.body.removeChild(titleEl);
+    addImage(titleCanvas, contentW, 20);
+
+    curY += 2;
+
+    // --- Pivot Table (rebuild as flat table to avoid thead/tbody rendering issues) ---
+    const availableH = pageH - curY - margin - 10;
+    const targetPxW = Math.round(contentW * 3.78);
+
+    // Extract all rows: header row first, then body rows
+    const headerCells = [...pivotTable.querySelectorAll('thead th')].map(th => th.textContent.trim());
+    const bodyRowsData = [...pivotTable.querySelectorAll('tbody tr')].map(tr =>
+        [...tr.querySelectorAll('td')].map(td => td.textContent.trim())
+    );
+
+    // Build a plain table (no thead/tbody) to avoid rendering order issues
+    function buildPdfTable(fontSize) {
+        const tbl = document.createElement('table');
+        tbl.style.cssText = `
+            width: 100%; border-collapse: collapse;
+            font-family: 'Assistant', sans-serif; font-size: ${fontSize}px;
+            direction: rtl;
+        `;
+        const cellStyle = `padding: 3px 5px; border: 1px solid #ccc; text-align: center; white-space: nowrap; font-size: ${fontSize}px;`;
+
+        // Header row
+        const hRow = document.createElement('tr');
+        headerCells.forEach(text => {
+            const td = document.createElement('td');
+            td.textContent = text;
+            td.style.cssText = cellStyle + 'background-color: #1a2a4a; color: #fff; font-weight: bold;';
+            hRow.appendChild(td);
+        });
+        tbl.appendChild(hRow);
+
+        // Body rows
+        bodyRowsData.forEach((cells, rowIdx) => {
+            const tr = document.createElement('tr');
+            const isLastRow = rowIdx === bodyRowsData.length - 1;
+            cells.forEach(text => {
+                const td = document.createElement('td');
+                td.textContent = text;
+                td.style.cssText = cellStyle;
+                if (isLastRow) {
+                    td.style.fontWeight = 'bold';
+                    td.style.backgroundColor = '#f0f0f5';
+                }
+                tr.appendChild(td);
+            });
+            tbl.appendChild(tr);
+        });
+
+        return tbl;
+    }
+
+    const tableContainer = document.createElement('div');
+    tableContainer.style.cssText = `
+        position: absolute; left: -9999px; top: 0;
+        background: white; width: ${targetPxW}px; overflow: visible;
+    `;
+    document.body.appendChild(tableContainer);
+
+    // Shrink font until the table fits within the page
+    let tableFontSize = 11;
+    const mmPerPx = contentW / targetPxW;
+    for (let attempt = 0; attempt < 12; attempt++) {
+        tableContainer.innerHTML = '';
+        const tbl = buildPdfTable(tableFontSize);
+        tableContainer.appendChild(tbl);
+        const tblW = tbl.scrollWidth;
+        const tblH = tbl.scrollHeight;
+        const fitsWidth = tblW <= targetPxW + 2;
+        const renderedH = (targetPxW / Math.max(tblW, 1)) * tblH * mmPerPx;
+        const fitsHeight = renderedH <= availableH;
+        if (fitsWidth && fitsHeight) break;
+        tableFontSize -= 0.5;
+        if (tableFontSize < 5) break;
+    }
+
+    const tableCanvas = await captureElement(tableContainer, 2);
+    document.body.removeChild(tableContainer);
+    addImage(tableCanvas, contentW, availableH);
+
+    // --- Charts ---
+    function addChartImage(chartCanvas, title, widthMm, maxHeightMm) {
+        if (!chartCanvas || chartCanvas.width === 0) return;
+        const ratio = chartCanvas.height / chartCanvas.width;
+        let imgH = widthMm * ratio;
+        if (imgH > maxHeightMm) imgH = maxHeightMm;
+        const titleH = title ? 7 : 0;
+        ensureSpace(imgH + titleH + 4);
+
+        if (title) {
+            // Render title as a temporary element
+            const tEl = document.createElement('div');
+            tEl.style.cssText = `
+                font-family: 'Assistant', sans-serif; font-size: 14px; font-weight: 700;
+                color: #1a2a4a; text-align: center; padding: 4px 8px;
+                direction: rtl; background: white; width: ${Math.round(widthMm * 3.78)}px;
+            `;
+            tEl.textContent = title;
+            document.body.appendChild(tEl);
+            // Capture synchronously is not possible, so we do it inline below
+            document.body.removeChild(tEl);
+            // Instead, just leave space — chart has its own legend/labels
+            curY += 1;
+        }
+
+        const imgData = chartCanvas.toDataURL('image/png');
+        const imgW2 = widthMm;
+        let imgH2 = imgW2 * ratio;
+        if (imgH2 > maxHeightMm) { imgH2 = maxHeightMm; }
+        const xOff = margin + (contentW - imgW2) / 2;
+        doc.addImage(imgData, 'PNG', xOff, curY, imgW2, imgH2);
+        curY += imgH2 + 4;
+    }
+
+    async function addChartWithTitle(chartCanvas, title, widthMm, maxHeightMm) {
+        if (!chartCanvas || chartCanvas.width === 0) return;
+        const ratio = chartCanvas.height / chartCanvas.width;
+        let imgH = widthMm * ratio;
+        if (imgH > maxHeightMm) imgH = maxHeightMm;
+
+        // Build a composite element with title + chart image
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = `background: white; padding: 4px; direction: rtl; width: ${Math.round(widthMm * 3.78)}px;`;
+        if (title) {
+            const h = document.createElement('div');
+            h.style.cssText = 'font-family: "Assistant", sans-serif; font-size: 13px; font-weight: 700; color: #1a2a4a; text-align: center; margin-bottom: 4px;';
+            h.textContent = title;
+            wrapper.appendChild(h);
+        }
+        const img = document.createElement('img');
+        img.src = chartCanvas.toDataURL('image/png');
+        img.style.cssText = 'width: 100%; display: block;';
+        wrapper.appendChild(img);
+        document.body.appendChild(wrapper);
+        // Wait for image to load
+        await new Promise(r => { if (img.complete) r(); else img.onload = r; });
+        const compositeCanvas = await captureElement(wrapper, 2);
+        document.body.removeChild(wrapper);
+
+        const cRatio = compositeCanvas.height / compositeCanvas.width;
+        let cH = widthMm * cRatio;
+        if (cH > maxHeightMm + 8) cH = maxHeightMm + 8;
+        ensureSpace(cH + 2);
+        addImage(compositeCanvas, widthMm, maxHeightMm + 8);
+    }
+
+    // Main chart
+    const mainCanvas = $('#pivot-chart');
+    if (pivotChart && mainCanvas) {
+        const mainTitle = colMode === 'employees' ? 'התפלגות שעות לפי עובדים' : 'שעות לפי חודשים ותיקים';
+        await addChartWithTitle(mainCanvas, mainTitle, contentW, pageH * 0.35);
+    }
+
+    // Totals chart (months mode only)
+    const totalsArea = $('#totals-chart-area');
+    const totalsCanvasEl = $('#totals-chart');
+    if (totalsChart && totalsCanvasEl && !totalsArea.classList.contains('hidden')) {
+        await addChartWithTitle(totalsCanvasEl, 'מצטבר בכל התיקים', contentW, pageH * 0.35);
+    }
+
+    // Sub charts - rendered 2 per row
+    const subChartCards = [...document.querySelectorAll('#sub-charts-area .sub-chart-card')];
+    const halfW = (contentW - 4) / 2;
+
+    for (let i = 0; i < subChartCards.length; i += 2) {
+        const card1 = subChartCards[i];
+        const card2 = subChartCards[i + 1];
+
+        // Build a side-by-side wrapper
+        const pairWrapper = document.createElement('div');
+        pairWrapper.style.cssText = `display: flex; gap: 8px; direction: rtl; background: white; width: ${Math.round(contentW * 3.78)}px;`;
+
+        // Clone cards for capture
+        async function buildCardClone(card) {
+            const clone = document.createElement('div');
+            clone.style.cssText = 'flex: 1; text-align: center;';
+            const title = card.querySelector('h4')?.textContent || '';
+            if (title) {
+                const h = document.createElement('div');
+                h.style.cssText = 'font-family: "Assistant", sans-serif; font-size: 11px; font-weight: 700; color: #1a2a4a; text-align: center; margin-bottom: 2px;';
+                h.textContent = title;
+                clone.appendChild(h);
+            }
+            const cvs = card.querySelector('canvas');
+            if (cvs) {
+                const img = document.createElement('img');
+                img.src = cvs.toDataURL('image/png');
+                img.style.cssText = 'width: 100%; display: block;';
+                clone.appendChild(img);
+                await new Promise(r => { if (img.complete) r(); else img.onload = r; });
+            }
+            return clone;
+        }
+
+        const clone1 = await buildCardClone(card1);
+        pairWrapper.appendChild(clone1);
+
+        if (card2) {
+            const clone2 = await buildCardClone(card2);
+            pairWrapper.appendChild(clone2);
+        } else {
+            // Empty placeholder for odd last chart
+            const empty = document.createElement('div');
+            empty.style.cssText = 'flex: 1;';
+            pairWrapper.appendChild(empty);
+        }
+
+        document.body.appendChild(pairWrapper);
+        const pairCanvas = await captureElement(pairWrapper, 2);
+        document.body.removeChild(pairWrapper);
+
+        const pRatio = pairCanvas.height / pairCanvas.width;
+        let pH = contentW * pRatio;
+        ensureSpace(pH + 4);
+        addImage(pairCanvas, contentW, 90);
+    }
+
+    // --- Footer on all pages ---
+    const totalPages = doc.getNumberOfPages();
+    const now = new Date();
+    const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(150, 150, 150);
+        // Footer text — use simple LTR format to avoid font issues
+        doc.text(`${dateStr} ${timeStr}`, pageW - margin, pageH - 6, { align: 'right' });
+        doc.text(`${i} / ${totalPages}`, margin, pageH - 6, { align: 'left' });
+        doc.setTextColor(0, 0, 0);
+    }
+
+    doc.save('דוח_שעות.pdf');
+}
+
+// ============================================================
 // Group Import/Export
 // ============================================================
 $('#download-emp-groups').addEventListener('click', () => {
