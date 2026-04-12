@@ -213,35 +213,51 @@ function parseReport(rows) {
     }
     if (headerRowIdx < 0) return;
 
-    // Detect format: Format 1 has "לקוח" column, Format 2 has "חשבון" column
+    // Detect format
     const headerRow = rows[headerRowIdx];
     const headerTexts = headerRow.map(c => c ? String(c).trim() : '');
     const isFormat2 = headerTexts.includes('חשבון') && !headerTexts.includes('לקוח');
-
     console.log('Detected format:', isFormat2 ? 'Format 2 (לפי לקוח/תיק)' : 'Format 1 (ByLawyerDate)');
 
-    rawEntries = [];
+    // Parse into a temporary array
+    const newEntries = [];
+    const origRawEntries = rawEntries;
+    rawEntries = newEntries; // Format parsers push into rawEntries
     if (isFormat2) {
         parseReportFormat2(rows, headerRowIdx, headerRow);
     } else {
         parseReportFormat1(rows, headerRowIdx, headerRow);
     }
+    rawEntries = origRawEntries; // Restore original
 
-    console.log('Parsed entries:', rawEntries.length);
-    if (rawEntries.length === 0) { alert('לא נמצאו רשומות בקובץ'); return; }
+    console.log('Parsed new entries:', newEntries.length);
+    if (newEntries.length === 0) { alert('לא נמצאו רשומות בקובץ'); return; }
 
-    // Set date filters
-    const validDates = rawEntries
-        .filter(e => e.date instanceof Date && !isNaN(e.date.getTime()))
-        .map(e => e.date.getTime());
-    if (validDates.length) {
-        $('#date-from').value = formatDateISO(new Date(Math.min(...validDates)));
-        $('#date-to').value = formatDateISO(new Date(Math.max(...validDates)));
+    // If existing data, ask user what to do
+    if (rawEntries.length > 0) {
+        const action = confirm(
+            `כבר טעונות ${rawEntries.length} רשומות.\n` +
+            `הקובץ החדש מכיל ${newEntries.length} רשומות.\n\n` +
+            `לחץ "אישור" כדי לצרף את הנתונים החדשים לנתונים הקיימים.\n` +
+            `לחץ "ביטול" כדי להחליף את הנתונים הקיימים.`
+        );
+
+        if (action) {
+            // Append mode — check for duplicates
+            appendEntries(newEntries);
+        } else {
+            // Replace mode
+            rawEntries = newEntries;
+            const totalBillable = newEntries.reduce((s, e) => s + (e.billableHours || 0), 0);
+            alert(`הנתונים הוחלפו.\n${newEntries.length} רשומות נטענו.\nסה"כ שעות חיוב: ${totalBillable.toFixed(2)}`);
+        }
     } else {
-        $('#date-from').value = '';
-        $('#date-to').value = '';
+        // First load — just set
+        rawEntries = newEntries;
     }
 
+    // Update date filters based on all current entries
+    updateDateFilters();
     rebuildCaseFilter();
 
     try {
@@ -255,6 +271,55 @@ function parseReport(rows) {
     } catch (err) {
         console.error('Error rendering UI:', err);
         alert('שגיאה בהצגת הנתונים: ' + err.message);
+    }
+}
+
+function entryKey(e) {
+    const dateStr = (e.date instanceof Date && !isNaN(e.date.getTime()))
+        ? e.date.toISOString().slice(0, 10) : '';
+    return `${e.client}|${e.caseName}|${e.employee}|${dateStr}|${e.billableHours}`;
+}
+
+function appendEntries(newEntries) {
+    // Find duplicates
+    const existingKeys = new Set(rawEntries.map(e => entryKey(e)));
+    const duplicates = newEntries.filter(e => existingKeys.has(entryKey(e)));
+    const unique = newEntries.filter(e => !existingKeys.has(entryKey(e)));
+
+    let addedEntries;
+
+    if (duplicates.length > 0) {
+        const ignoreDups = confirm(
+            `נמצאו ${duplicates.length} רשומות כפולות (מתוך ${newEntries.length}).\n` +
+            `רשומה כפולה = אותו לקוח, תיק, עובד, תאריך ושעות חיוב.\n\n` +
+            `לחץ "אישור" כדי להתעלם מהכפולות ולצרף רק ${unique.length} רשומות חדשות.\n` +
+            `לחץ "ביטול" כדי לצרף את כל ${newEntries.length} הרשומות כולל הכפולות.`
+        );
+
+        if (ignoreDups) {
+            addedEntries = unique;
+        } else {
+            addedEntries = newEntries;
+        }
+    } else {
+        addedEntries = newEntries;
+    }
+
+    rawEntries = rawEntries.concat(addedEntries);
+    const totalBillable = addedEntries.reduce((s, e) => s + (e.billableHours || 0), 0);
+    alert(`${addedEntries.length} רשומות צורפו.\nסה"כ שעות חיוב ברשומות החדשות: ${totalBillable.toFixed(2)}`);
+}
+
+function updateDateFilters() {
+    const validDates = rawEntries
+        .filter(e => e.date instanceof Date && !isNaN(e.date.getTime()))
+        .map(e => e.date.getTime());
+    if (validDates.length) {
+        $('#date-from').value = formatDateISO(new Date(Math.min(...validDates)));
+        $('#date-to').value = formatDateISO(new Date(Math.max(...validDates)));
+    } else {
+        $('#date-from').value = '';
+        $('#date-to').value = '';
     }
 }
 
@@ -863,12 +928,21 @@ function renderPivot() {
         const rowSet = new Set();
         getAllCases().forEach(c => {
             if (caseGroupMap[c.key]) rowSet.add(caseGroupMap[c.key]);
+            else if (ungroupedMode === 'individual') rowSet.add(c.key);
             else rowSet.add('אחר');
         });
-        // Filter by selected case groups
-        rowKeys = [...rowSet].filter(r => selectedCaseGroups.has(r)).sort();
-        getRow = (e) => caseGroupMap[e.caseKey] || 'אחר';
-        rowLabel = (r) => r;
+        // Filter by selected case groups; individual ungrouped cases always pass through
+        const groupNames = new Set(Object.keys(caseGroups));
+        rowKeys = [...rowSet].filter(r => {
+            if (groupNames.has(r) || r === 'אחר') return selectedCaseGroups.has(r);
+            return true; // individual ungrouped case — always include
+        }).sort();
+        getRow = (e) => caseGroupMap[e.caseKey] || (ungroupedMode === 'individual' ? e.caseKey : 'אחר');
+        rowLabel = (r) => {
+            // If it's a group name, return as-is; if it's a caseKey, format it
+            if (Object.keys(caseGroups).includes(r) || r === 'אחר') return r;
+            return caseLabel(r);
+        };
     } else {
         // Individual cases
         const allCases = getAllCases();
