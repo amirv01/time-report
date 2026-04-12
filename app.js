@@ -193,21 +193,16 @@ function validateReportHeaders(rows) {
 }
 
 // ============================================================
-// Parse Report
+// Parse Report (auto-detect format)
 // ============================================================
 function parseReport(rows) {
-    // Validate this looks like a time report
     if (!validateReportHeaders(rows)) {
         alert('הקובץ אינו דוח שעות תקין.\nלא נמצאו עמודות נדרשות (עובד, תאריך, שעות חיוב וכו\').\n\nאם זהו קובץ קבוצות, שנה את שמו ל:\n• קבוצות_עובדים.xlsx\n• קבוצות_תיקים.xlsx');
         return;
     }
 
-    rawEntries = [];
-    let currentEmployee = null;
-    let currentDate = null;
-
+    // Find header row
     let headerRowIdx = -1;
-    let colMap = {};
     for (let i = 0; i < Math.min(rows.length, 30); i++) {
         const row = rows[i];
         if (!row) continue;
@@ -216,10 +211,58 @@ function parseReport(rows) {
         }
         if (headerRowIdx >= 0) break;
     }
+    if (headerRowIdx < 0) return;
 
-    if (headerRowIdx < 0) return; // already validated above
-
+    // Detect format: Format 1 has "לקוח" column, Format 2 has "חשבון" column
     const headerRow = rows[headerRowIdx];
+    const headerTexts = headerRow.map(c => c ? String(c).trim() : '');
+    const isFormat2 = headerTexts.includes('חשבון') && !headerTexts.includes('לקוח');
+
+    console.log('Detected format:', isFormat2 ? 'Format 2 (לפי לקוח/תיק)' : 'Format 1 (ByLawyerDate)');
+
+    rawEntries = [];
+    if (isFormat2) {
+        parseReportFormat2(rows, headerRowIdx, headerRow);
+    } else {
+        parseReportFormat1(rows, headerRowIdx, headerRow);
+    }
+
+    console.log('Parsed entries:', rawEntries.length);
+    if (rawEntries.length === 0) { alert('לא נמצאו רשומות בקובץ'); return; }
+
+    // Set date filters
+    const validDates = rawEntries
+        .filter(e => e.date instanceof Date && !isNaN(e.date.getTime()))
+        .map(e => e.date.getTime());
+    if (validDates.length) {
+        $('#date-from').value = formatDateISO(new Date(Math.min(...validDates)));
+        $('#date-to').value = formatDateISO(new Date(Math.max(...validDates)));
+    } else {
+        $('#date-from').value = '';
+        $('#date-to').value = '';
+    }
+
+    rebuildCaseFilter();
+
+    try {
+        $('#controls-section').classList.remove('hidden');
+        $('#tabs-section').classList.remove('hidden');
+        showTab('pivot');
+        renderCleanTable();
+        renderEmployeeGroups();
+        renderCaseGroups();
+        renderPivot();
+    } catch (err) {
+        console.error('Error rendering UI:', err);
+        alert('שגיאה בהצגת הנתונים: ' + err.message);
+    }
+}
+
+// ============================================================
+// Format 1: Rpt_TD_ByLawyerDate (לקוח + תיק columns in each row)
+// ============================================================
+function parseReportFormat1(rows, headerRowIdx, headerRow) {
+    const colMap = {};
     const headerNames = {
         'תיאור': 'description', 'סה"כ': 'total', 'סה״כ': 'total',
         'תעריף': 'rate', 'שעות חיוב': 'billableHours', 'שעות עבודה': 'workHours',
@@ -230,8 +273,10 @@ function parseReport(rows) {
         const cell = headerRow[j];
         if (cell && headerNames[cell]) colMap[headerNames[cell]] = j;
     }
+    console.log('Format 1 - Header row:', headerRowIdx, 'Column map:', colMap);
 
-    console.log('Header row:', headerRowIdx, 'Column map:', colMap);
+    let currentEmployee = null;
+    let currentDate = null;
 
     for (let i = headerRowIdx + 1; i < rows.length; i++) {
         const row = rows[i];
@@ -277,36 +322,88 @@ function parseReport(rows) {
             total: toNum(row[colMap.total]) || 0
         });
     }
+}
 
-    console.log('Parsed entries:', rawEntries.length);
-
-    if (rawEntries.length === 0) { alert('לא נמצאו רשומות בקובץ'); return; }
-
-    const validDates = rawEntries
-        .filter(e => e.date instanceof Date && !isNaN(e.date.getTime()))
-        .map(e => e.date.getTime());
-    if (validDates.length) {
-        $('#date-from').value = formatDateISO(new Date(Math.min(...validDates)));
-        $('#date-to').value = formatDateISO(new Date(Math.max(...validDates)));
-    } else {
-        $('#date-from').value = '';
-        $('#date-to').value = '';
+// ============================================================
+// Format 2: פרוט דיווחי שעות לפי לקוח/תיק (section headers for client/case)
+// ============================================================
+function parseReportFormat2(rows, headerRowIdx, headerRow) {
+    const colMap = {};
+    const headerNames = {
+        'תיאור': 'description', 'סה"כ': 'total', 'סה״כ': 'total',
+        'תעריף': 'rate', 'שעות חיוב': 'billableHours', 'שעות דיווח': 'workHours',
+        'מחיקות': 'deletions', 'סטטוס': 'status', 'חשבון': 'account',
+        'תאריך': 'date', 'עובד': 'employee'
+    };
+    for (let j = 0; j < headerRow.length; j++) {
+        const cell = headerRow[j];
+        if (cell && headerNames[String(cell).trim()]) colMap[headerNames[String(cell).trim()]] = j;
     }
+    console.log('Format 2 - Header row:', headerRowIdx, 'Column map:', colMap);
 
-    // Initialize case filter with all case groups + "אחר"
-    rebuildCaseFilter();
+    let currentClient = '';
+    let currentCase = '';
 
-    try {
-        $('#controls-section').classList.remove('hidden');
-        $('#tabs-section').classList.remove('hidden');
-        showTab('pivot');
-        renderCleanTable();
-        renderEmployeeGroups();
-        renderCaseGroups();
-        renderPivot();
-    } catch (err) {
-        console.error('Error rendering UI:', err);
-        alert('שגיאה בהצגת הנתונים: ' + err.message);
+    for (let i = headerRowIdx + 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row) continue;
+
+        const firstCell = row[0] != null ? String(row[0]).trim() : '';
+
+        // Skip subtotal rows
+        if (firstCell.startsWith('סה"כ') || firstCell.startsWith('סה״כ')) continue;
+
+        // Detect client section header: "לקוח: NNN - Name"
+        // Keep full "NNN - Name" and normalize to match Format 1:
+        //   - replace " (double quote) with '' (two single quotes)
+        //   - replace hyphen between Hebrew words with space
+        if (firstCell.startsWith('לקוח:')) {
+            currentClient = firstCell.replace(/^לקוח:\s*/, '').trim()
+                .replace(/"/g, "''")
+                .replace(/([\u0590-\u05FF])-(?=[\u0590-\u05FF])/g, '$1 ');
+            continue;
+        }
+
+        // Detect case section header: "תיק: N - Name"
+        // Keep full "N - Name" to match Format 1 output
+        if (firstCell.match(/^\s*תיק:/)) {
+            currentCase = firstCell.replace(/^\s*תיק:\s*/, '').trim();
+            continue;
+        }
+
+        // Data row: must have employee and description
+        const empCell = row[colMap.employee];
+        const desc = row[colMap.description];
+        if (!empCell && !desc) continue;
+
+        const dateCell = row[colMap.date];
+        let entryDate = null;
+        if (dateCell != null && typeof dateCell !== 'string') {
+            if (dateCell instanceof Date) entryDate = dateCell;
+            else if (typeof dateCell === 'number') entryDate = excelDateToJS(dateCell);
+        } else if (typeof dateCell === 'string' && dateCell.trim()) {
+            entryDate = parseDate(dateCell);
+        }
+
+        if (!desc) continue;
+
+        const billableHours = toNum(row[colMap.billableHours]);
+        const workHours = toNum(row[colMap.workHours]);
+        if (billableHours === null && workHours === null) continue;
+
+        rawEntries.push({
+            employee: empCell ? String(empCell).trim() : '',
+            date: entryDate,
+            description: String(desc),
+            client: currentClient,
+            caseName: currentCase,
+            caseKey: currentClient + '|' + currentCase,
+            status: row[colMap.status] ? String(row[colMap.status]) : '',
+            rate: toNum(row[colMap.rate]) || 0,
+            billableHours: billableHours || 0,
+            workHours: workHours || 0,
+            total: toNum(row[colMap.total]) || 0
+        });
     }
 }
 
@@ -355,10 +452,16 @@ function excelDateToJS(serial) {
 function parseDate(val) {
     if (val instanceof Date) return val;
     if (typeof val === 'string') {
-        const d = new Date(val);
+        const trimmed = val.trim();
+        // Try DD/MM/YYYY first (Hebrew date format)
+        const parts = trimmed.split('/');
+        if (parts.length === 3) {
+            const d = new Date(parts[2], parts[1] - 1, parts[0]);
+            if (!isNaN(d.getTime())) return d;
+        }
+        // Fallback to native parsing (ISO format, etc.)
+        const d = new Date(trimmed);
         if (!isNaN(d.getTime())) return d;
-        const parts = val.split('/');
-        if (parts.length === 3) return new Date(parts[2], parts[1] - 1, parts[0]);
     }
     return null;
 }
