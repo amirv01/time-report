@@ -51,12 +51,37 @@ function handleFiles(fileList) {
 
 function handleFile(file) {
     const name = file.name;
+
+    // Check 1: File extension
+    const ext = name.split('.').pop().toLowerCase();
+    if (!['xlsx', 'xls', 'xlsm'].includes(ext)) {
+        alert(`סוג הקובץ "${ext}" אינו נתמך.\nיש להעלות קבצי Excel בלבד (xlsx, xls, xlsm).`);
+        return;
+    }
+
+    // Check 2: File size
+    const sizeMB = file.size / (1024 * 1024);
+    if (sizeMB > 10) {
+        if (!confirm(`הקובץ "${name}" גדול (${sizeMB.toFixed(1)} MB).\nעיבוד קובץ גדול עלול להיות איטי.\n\nלהמשיך?`)) return;
+    }
+
     const reader = new FileReader();
     reader.onload = (e) => {
         try {
             const data = new Uint8Array(e.target.result);
             const wb = XLSX.read(data, { type: 'array', cellDates: true });
+
+            // Check 3: Empty file
+            if (!wb.SheetNames.length) {
+                alert(`הקובץ "${name}" ריק — לא נמצאו גליונות.`);
+                return;
+            }
             const sheet = wb.Sheets[wb.SheetNames[0]];
+            const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+            if (range.e.r === 0 && range.e.c === 0 && !sheet['A1']) {
+                alert(`הקובץ "${name}" ריק — הגליון הראשון אינו מכיל נתונים.`);
+                return;
+            }
 
             if (name.includes('עובדים')) {
                 importEmployeeGroups(wb);
@@ -90,7 +115,7 @@ function showFileStatus(name, msg) {
 function importEmployeeGroups(wb) {
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
 
-    // Validate structure
+    // Check 15: Required columns
     if (!rows.length) { alert('קובץ קבוצות עובדים ריק'); return; }
     const first = rows[0];
     if (!('קבוצה' in first) || !('עובד' in first)) {
@@ -100,16 +125,23 @@ function importEmployeeGroups(wb) {
 
     const errors = [];
     const newGroups = {};
+    const memberToGroups = {}; // track which groups each member belongs to
+
     rows.forEach((r, i) => {
         const group = r['קבוצה'];
         const member = r['עובד'];
         if (!group && !member) return; // skip empty rows
+        // Check 16: Empty group names
         if (!group) { errors.push(`שורה ${i + 2}: חסר שם קבוצה`); return; }
+        // Check 17: Empty member names
         if (!member) { errors.push(`שורה ${i + 2}: חסר שם עובד`); return; }
         const g = String(group).trim();
         const m = String(member).trim();
         if (!newGroups[g]) newGroups[g] = [];
         if (!newGroups[g].includes(m)) newGroups[g].push(m);
+        // Check 18: Track duplicate assignments
+        if (!memberToGroups[m]) memberToGroups[m] = [];
+        if (!memberToGroups[m].includes(g)) memberToGroups[m].push(g);
     });
 
     if (errors.length > 0 && Object.keys(newGroups).length === 0) {
@@ -117,7 +149,33 @@ function importEmployeeGroups(wb) {
         return;
     }
     if (errors.length > 0) {
-        console.warn('Employee groups import warnings:', errors);
+        alert('אזהרות בטעינת קבוצות עובדים:\n' + errors.slice(0, 5).join('\n') +
+            (errors.length > 5 ? `\n...ועוד ${errors.length - 5} אזהרות` : ''));
+    }
+
+    // Check 18: Duplicate assignments
+    const dups = Object.entries(memberToGroups).filter(([_, groups]) => groups.length > 1);
+    if (dups.length > 0) {
+        const dupList = dups.slice(0, 5).map(([m, gs]) => `"${m}" → ${gs.join(', ')}`).join('\n');
+        alert(`אזהרה: ${dups.length} עובדים משויכים ליותר מקבוצה אחת:\n${dupList}` +
+            (dups.length > 5 ? `\n...ועוד ${dups.length - 5}` : '') +
+            '\n\nהעובד ישויך לקבוצה האחרונה בלבד.');
+    }
+
+    // Check 20: Empty groups
+    const emptyGroups = Object.entries(newGroups).filter(([_, members]) => members.length === 0).map(([g]) => g);
+    if (emptyGroups.length > 0) {
+        alert(`אזהרה: ${emptyGroups.length} קבוצות ריקות (ללא חברים):\n${emptyGroups.join(', ')}`);
+    }
+
+    // Reserved name check
+    if ('אחר' in newGroups) {
+        alert('קובץ קבוצות עובדים לא תקין.\nלא ניתן להשתמש בשם "אחר" לקבוצה.\nשם זה שמור לפריטים שאינם משויכים לקבוצה.');
+        return;
+    }
+
+    if (Object.keys(employeeGroups).length > 0) {
+        if (!confirm(`כבר קיימות ${Object.keys(employeeGroups).length} קבוצות עובדים.\nטעינת הקובץ תחליף את הקבוצות הקיימות.\n\nלהמשיך?`)) return;
     }
 
     employeeGroups = newGroups;
@@ -164,7 +222,40 @@ function importCaseGroups(wb) {
         return;
     }
     if (errors.length > 0) {
-        console.warn('Case groups import warnings:', errors);
+        alert('אזהרות בטעינת קבוצות תיקים:\n' + errors.slice(0, 5).join('\n') +
+            (errors.length > 5 ? `\n...ועוד ${errors.length - 5} אזהרות` : ''));
+    }
+
+    // Check 24: Duplicate assignments (same case in multiple groups)
+    const caseToGroups = {};
+    Object.entries(newGroups).forEach(([g, keys]) => {
+        keys.forEach(k => {
+            if (!caseToGroups[k]) caseToGroups[k] = [];
+            if (!caseToGroups[k].includes(g)) caseToGroups[k].push(g);
+        });
+    });
+    const caseDups = Object.entries(caseToGroups).filter(([_, groups]) => groups.length > 1);
+    if (caseDups.length > 0) {
+        const dupList = caseDups.slice(0, 5).map(([k, gs]) => `"${k.replace('|', ' / ')}" → ${gs.join(', ')}`).join('\n');
+        alert(`אזהרה: ${caseDups.length} תיקים משויכים ליותר מקבוצה אחת:\n${dupList}` +
+            (caseDups.length > 5 ? `\n...ועוד ${caseDups.length - 5}` : '') +
+            '\n\nהתיק ישויך לקבוצה האחרונה בלבד.');
+    }
+
+    // Check 26: Empty groups
+    const emptyCaseGroups = Object.entries(newGroups).filter(([_, members]) => members.length === 0).map(([g]) => g);
+    if (emptyCaseGroups.length > 0) {
+        alert(`אזהרה: ${emptyCaseGroups.length} קבוצות תיקים ריקות (ללא חברים):\n${emptyCaseGroups.join(', ')}`);
+    }
+
+    // Reserved name check
+    if ('אחר' in newGroups) {
+        alert('קובץ קבוצות תיקים לא תקין.\nלא ניתן להשתמש בשם "אחר" לקבוצה.\nשם זה שמור לפריטים שאינם משויכים לקבוצה.');
+        return;
+    }
+
+    if (Object.keys(caseGroups).length > 0) {
+        if (!confirm(`כבר קיימות ${Object.keys(caseGroups).length} קבוצות תיקים.\nטעינת הקובץ תחליף את הקבוצות הקיימות.\n\nלהמשיך?`)) return;
     }
 
     caseGroups = newGroups;
@@ -196,8 +287,18 @@ function validateReportHeaders(rows) {
 // Parse Report (auto-detect format)
 // ============================================================
 function parseReport(rows) {
+    // Check 4: Header row not found
     if (!validateReportHeaders(rows)) {
-        alert('הקובץ אינו דוח שעות תקין.\nלא נמצאו עמודות נדרשות (עובד, תאריך, שעות חיוב וכו\').\n\nאם זהו קובץ קבוצות, שנה את שמו ל:\n• קבוצות_עובדים.xlsx\n• קבוצות_תיקים.xlsx');
+        // Collect any column headers found in first 30 rows for diagnostic
+        const foundHeaders = [];
+        for (let i = 0; i < Math.min(rows.length, 30); i++) {
+            if (!rows[i]) continue;
+            rows[i].forEach(c => { if (c && typeof c === 'string' && c.trim()) foundHeaders.push(c.trim()); });
+        }
+        const sample = foundHeaders.slice(0, 10).join(', ');
+        alert('הקובץ אינו דוח שעות תקין.\nלא נמצאה עמודת "עובד" ב-30 השורות הראשונות.\n\n' +
+            (sample ? `תוכן שנמצא: ${sample}\n\n` : '') +
+            'אם זהו קובץ קבוצות, העלו אותו בלשונית המתאימה:\n• קבוצות עובדים\n• קבוצות תיקים');
         return;
     }
 
@@ -219,6 +320,18 @@ function parseReport(rows) {
     const isFormat2 = headerTexts.includes('חשבון') && !headerTexts.includes('לקוח');
     console.log('Detected format:', isFormat2 ? 'Format 2 (לפי לקוח/תיק)' : 'Format 1 (ByLawyerDate)');
 
+    // Check 5: Missing critical columns
+    const requiredCols = ['עובד', 'תאריך'];
+    const hoursCols = ['שעות חיוב', 'שעות עבודה', 'שעות דיווח'];
+    const missingRequired = requiredCols.filter(c => !headerTexts.includes(c));
+    const hasHoursCol = hoursCols.some(c => headerTexts.includes(c));
+    if (missingRequired.length > 0 || !hasHoursCol) {
+        const missing = [...missingRequired];
+        if (!hasHoursCol) missing.push('שעות חיוב / שעות עבודה');
+        alert(`חסרות עמודות נדרשות בדוח:\n${missing.join(', ')}\n\nעמודות שנמצאו: ${headerTexts.filter(h => h).join(', ')}`);
+        return;
+    }
+
     // Parse into a temporary array
     const newEntries = [];
     const origRawEntries = rawEntries;
@@ -231,7 +344,56 @@ function parseReport(rows) {
     rawEntries = origRawEntries; // Restore original
 
     console.log('Parsed new entries:', newEntries.length);
-    if (newEntries.length === 0) { alert('לא נמצאו רשומות בקובץ'); return; }
+    // Check 6: No data rows
+    if (newEntries.length === 0) { alert('לא נמצאו רשומות תקינות בקובץ.\nוודאו שהקובץ מכיל שורות נתונים מתחת לשורת הכותרת.'); return; }
+
+    // Check 7: All dates invalid
+    const validDateCount = newEntries.filter(e => e.date instanceof Date && !isNaN(e.date.getTime())).length;
+    if (validDateCount === 0) {
+        alert(`אזהרה: כל ${newEntries.length} הרשומות ללא תאריך תקין.\nייתכן שפורמט התאריך בקובץ אינו מזוהה.`);
+    } else if (validDateCount < newEntries.length) {
+        const invalidCount = newEntries.length - validDateCount;
+        console.warn(`${invalidCount} רשומות עם תאריך לא תקין מתוך ${newEntries.length}`);
+    }
+
+    // Check 8: Negative hours
+    const negativeHours = newEntries.filter(e => e.billableHours < 0 || e.workHours < 0);
+    if (negativeHours.length > 0) {
+        alert(`אזהרה: ${negativeHours.length} רשומות עם שעות שליליות.\nהנתונים ייטענו כפי שהם.`);
+    }
+
+    // Check 9: Unreasonable hours (>24 per entry)
+    const unreasonableHours = newEntries.filter(e => e.billableHours > 24 || e.workHours > 24);
+    if (unreasonableHours.length > 0) {
+        const examples = unreasonableHours.slice(0, 3).map(e =>
+            `${e.employee}: ${Math.max(e.billableHours, e.workHours)} שעות (${e.caseName})`
+        ).join('\n');
+        alert(`אזהרה: ${unreasonableHours.length} רשומות עם יותר מ-24 שעות:\n${examples}` +
+            (unreasonableHours.length > 3 ? `\n...ועוד ${unreasonableHours.length - 3}` : ''));
+    }
+
+    // Check 10: Missing employee names
+    const noEmployee = newEntries.filter(e => !e.employee || !e.employee.trim());
+    if (noEmployee.length > 0) {
+        alert(`אזהרה: ${noEmployee.length} רשומות ללא שם עובד.`);
+    }
+
+    // Check 11: Missing client/case
+    const noClientCase = newEntries.filter(e => (!e.client || !e.client.trim()) && (!e.caseName || !e.caseName.trim()));
+    if (noClientCase.length > 0) {
+        alert(`אזהרה: ${noClientCase.length} רשומות ללא לקוח ותיק.`);
+    }
+
+    // Check 12: Duplicate rows
+    const keyCount = {};
+    newEntries.forEach(e => {
+        const k = entryKey(e);
+        keyCount[k] = (keyCount[k] || 0) + 1;
+    });
+    const internalDups = Object.values(keyCount).filter(c => c > 1).reduce((s, c) => s + (c - 1), 0);
+    if (internalDups > 0) {
+        alert(`אזהרה: נמצאו ${internalDups} שורות כפולות בתוך הקובץ.\n(אותו לקוח, תיק, עובד, תאריך ושעות חיוב)`);
+    }
 
     // If existing data, ask user what to do
     if (rawEntries.length > 0) {
@@ -408,6 +570,9 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
 
     let currentClient = '';
     let currentCase = '';
+    let orphanRows = 0; // Check 13: data rows before any section header
+    let lastSectionHeader = null; // Check 14: track section headers without data
+    let emptySections = []; // Check 14
 
     for (let i = headerRowIdx + 1; i < rows.length; i++) {
         const row = rows[i];
@@ -423,16 +588,26 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
         //   - replace " (double quote) with '' (two single quotes)
         //   - replace hyphen between Hebrew words with space
         if (firstCell.startsWith('לקוח:')) {
+            // Check 14: previous section had no data
+            if (lastSectionHeader && lastSectionHeader.dataCount === 0) {
+                emptySections.push(lastSectionHeader.label);
+            }
             currentClient = firstCell.replace(/^לקוח:\s*/, '').trim()
                 .replace(/"/g, "''")
                 .replace(/([\u0590-\u05FF])-(?=[\u0590-\u05FF])/g, '$1 ');
+            lastSectionHeader = { label: 'לקוח: ' + currentClient, dataCount: 0 };
             continue;
         }
 
         // Detect case section header: "תיק: N - Name"
         // Keep full "N - Name" to match Format 1 output
         if (firstCell.match(/^\s*תיק:/)) {
+            // Check 14: previous section had no data
+            if (lastSectionHeader && lastSectionHeader.dataCount === 0) {
+                emptySections.push(lastSectionHeader.label);
+            }
             currentCase = firstCell.replace(/^\s*תיק:\s*/, '').trim();
+            lastSectionHeader = { label: 'תיק: ' + currentCase, dataCount: 0 };
             continue;
         }
 
@@ -440,6 +615,11 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
         const empCell = row[colMap.employee];
         const desc = row[colMap.description];
         if (!empCell && !desc) continue;
+
+        // Check 13: data row before any section header
+        if (!currentClient && !currentCase) {
+            orphanRows++;
+        }
 
         const dateCell = row[colMap.date];
         let entryDate = null;
@@ -456,6 +636,9 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
         const workHours = toNum(row[colMap.workHours]);
         if (billableHours === null && workHours === null) continue;
 
+        // Track data count for Check 14
+        if (lastSectionHeader) lastSectionHeader.dataCount++;
+
         rawEntries.push({
             employee: empCell ? String(empCell).trim() : '',
             date: entryDate,
@@ -469,6 +652,25 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
             workHours: workHours || 0,
             total: toNum(row[colMap.total]) || 0
         });
+    }
+
+    // Check 14: last section header without data
+    if (lastSectionHeader && lastSectionHeader.dataCount === 0) {
+        emptySections.push(lastSectionHeader.label);
+    }
+
+    // Check 13: Warn about orphan rows
+    if (orphanRows > 0) {
+        console.warn(`Format 2: ${orphanRows} שורות נתונים לפני כותרת לקוח/תיק ראשונה`);
+        alert(`אזהרה: ${orphanRows} שורות נתונים הופיעו לפני כותרת לקוח/תיק ראשונה.\nשורות אלו נטענו ללא שיוך ללקוח או תיק.`);
+    }
+
+    // Check 14: Warn about empty sections
+    if (emptySections.length > 0) {
+        const list = emptySections.slice(0, 5).join('\n');
+        console.warn('Format 2: Empty sections:', emptySections);
+        alert(`אזהרה: ${emptySections.length} כותרות ללא שורות נתונים:\n${list}` +
+            (emptySections.length > 5 ? `\n...ועוד ${emptySections.length - 5}` : ''));
     }
 }
 
@@ -730,6 +932,7 @@ $('#download-clean').addEventListener('click', () => {
 $('#add-emp-group').addEventListener('click', () => {
     const name = $('#new-emp-group-name').value.trim();
     if (!name || employeeGroups[name]) return;
+    if (name === 'אחר') { alert('לא ניתן ליצור קבוצה בשם "אחר".\nשם זה שמור לפריטים שאינם משויכים לקבוצה.'); return; }
     employeeGroups[name] = [];
     $('#new-emp-group-name').value = '';
     renderEmployeeGroups();
@@ -788,6 +991,7 @@ function setupGroupClicks(type) {
 $('#add-case-group').addEventListener('click', () => {
     const name = $('#new-case-group-name').value.trim();
     if (!name || caseGroups[name]) return;
+    if (name === 'אחר') { alert('לא ניתן ליצור קבוצה בשם "אחר".\nשם זה שמור לפריטים שאינם משויכים לקבוצה.'); return; }
     caseGroups[name] = [];
     $('#new-case-group-name').value = '';
     renderCaseGroups();
@@ -1150,6 +1354,23 @@ function pieOptions(legendPos, fontSize) {
                     filter: (item, chart) => {
                         const val = chart.datasets[0].data[item.index];
                         return val > 0;
+                    },
+                    generateLabels: (chart) => {
+                        const data = chart.data;
+                        const total = data.datasets[0].data.reduce((a, b) => a + b, 0);
+                        return data.labels.map((label, i) => {
+                            const val = data.datasets[0].data[i];
+                            const pct = total > 0 ? ((val / total) * 100).toFixed(1) : '0.0';
+                            return {
+                                text: `${label} (${pct}%)`,
+                                fillStyle: data.datasets[0].backgroundColor[i],
+                                strokeStyle: data.datasets[0].borderColor || '#fff',
+                                lineWidth: data.datasets[0].borderWidth || 1,
+                                hidden: false,
+                                index: i,
+                                pointStyle: 'circle'
+                            };
+                        });
                     }
                 }
             },
