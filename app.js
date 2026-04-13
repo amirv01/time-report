@@ -43,70 +43,93 @@ fileInput.addEventListener('change', (e) => {
     if (e.target.files.length) handleFiles(e.target.files);
 });
 
+let fileQueue = Promise.resolve();
 function handleFiles(fileList) {
     for (const file of fileList) {
-        handleFile(file);
+        // Serialize file processing to avoid race conditions on rawEntries
+        fileQueue = fileQueue.then(() => handleFile(file));
     }
 }
 
 function handleFile(file) {
-    const name = file.name;
+    return new Promise((resolve) => {
+        const name = file.name;
 
-    // Check 1: File extension
-    const ext = name.split('.').pop().toLowerCase();
-    if (!['xlsx', 'xls', 'xlsm'].includes(ext)) {
-        alert(`סוג הקובץ "${ext}" אינו נתמך.\nיש להעלות קבצי Excel בלבד (xlsx, xls, xlsm).`);
-        return;
-    }
-
-    // Check 2: File size
-    const sizeMB = file.size / (1024 * 1024);
-    if (sizeMB > 10) {
-        if (!confirm(`הקובץ "${name}" גדול (${sizeMB.toFixed(1)} MB).\nעיבוד קובץ גדול עלול להיות איטי.\n\nלהמשיך?`)) return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        try {
-            const data = new Uint8Array(e.target.result);
-            const wb = XLSX.read(data, { type: 'array', cellDates: true });
-
-            // Check 3: Empty file
-            if (!wb.SheetNames.length) {
-                alert(`הקובץ "${name}" ריק — לא נמצאו גליונות.`);
-                return;
-            }
-            const sheet = wb.Sheets[wb.SheetNames[0]];
-            const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
-            if (range.e.r === 0 && range.e.c === 0 && !sheet['A1']) {
-                alert(`הקובץ "${name}" ריק — הגליון הראשון אינו מכיל נתונים.`);
-                return;
-            }
-
-            if (name.includes('עובדים')) {
-                importEmployeeGroups(wb);
-                showFileStatus(name, 'קבוצות עובדים נטענו');
-            } else if (name.includes('תיקים')) {
-                importCaseGroups(wb);
-                showFileStatus(name, 'קבוצות תיקים נטענו');
-            } else {
-                const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
-                parseReport(rows);
-                showFileStatus(name, 'דוח שעות נטען');
-            }
-        } catch (err) {
-            console.error('Error reading file:', err);
-            alert(`שגיאה בקריאת הקובץ "${name}": ${err.message}`);
+        // Check 1: File extension
+        const ext = name.split('.').pop().toLowerCase();
+        if (!['xlsx', 'xls', 'xlsm'].includes(ext)) {
+            alert(`סוג הקובץ "${ext}" אינו נתמך.\nיש להעלות קבצי Excel בלבד (xlsx, xls, xlsm).`);
+            resolve(); return;
         }
-    };
-    reader.readAsArrayBuffer(file);
+
+        // Check 2: File size
+        const sizeMB = file.size / (1024 * 1024);
+        if (sizeMB > 10) {
+            if (!confirm(`הקובץ "${name}" גדול (${sizeMB.toFixed(1)} MB).\nעיבוד קובץ גדול עלול להיות איטי.\n\nלהמשיך?`)) { resolve(); return; }
+        }
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const wb = XLSX.read(data, { type: 'array', cellDates: true });
+
+                // Check 3: Empty file
+                if (!wb.SheetNames.length) {
+                    alert(`הקובץ "${name}" ריק — לא נמצאו גליונות.`);
+                    resolve(); return;
+                }
+                const sheet = wb.Sheets[wb.SheetNames[0]];
+                const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+                if (range.e.r === 0 && range.e.c === 0 && !sheet['A1']) {
+                    alert(`הקובץ "${name}" ריק — הגליון הראשון אינו מכיל נתונים.`);
+                    resolve(); return;
+                }
+
+                if (name.includes('עובדים')) {
+                    // Validate structure before treating as employee groups
+                    const testRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { range: 0 });
+                    if (testRows.length > 0 && 'קבוצה' in testRows[0] && 'עובד' in testRows[0]) {
+                        importEmployeeGroups(wb);
+                        showFileStatus(name, 'קבוצות עובדים נטענו');
+                    } else {
+                        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+                        parseReport(rows);
+                        showFileStatus(name, 'דוח שעות נטען');
+                    }
+                } else if (name.includes('תיקים')) {
+                    // Validate structure before treating as case groups
+                    const testRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { range: 0 });
+                    if (testRows.length > 0 && 'קבוצה' in testRows[0]) {
+                        importCaseGroups(wb);
+                        showFileStatus(name, 'קבוצות תיקים נטענו');
+                    } else {
+                        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+                        parseReport(rows);
+                        showFileStatus(name, 'דוח שעות נטען');
+                    }
+                } else {
+                    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+                    parseReport(rows);
+                    showFileStatus(name, 'דוח שעות נטען');
+                }
+            } catch (err) {
+                console.error('Error reading file:', err);
+                alert(`שגיאה בקריאת הקובץ "${name}": ${err.message}`);
+            }
+            resolve();
+        };
+        reader.readAsArrayBuffer(file);
+    });
 }
 
+const _fileStatusHistory = [];
 function showFileStatus(name, msg) {
     const el = $('#file-name');
-    el.textContent = `${msg} (${name})`;
+    _fileStatusHistory.push(`${msg} (${name})`);
+    el.textContent = _fileStatusHistory.join(' | ');
     clearTimeout(el._timer);
-    el._timer = setTimeout(() => { el.textContent = ''; }, 4000);
+    el._timer = setTimeout(() => { _fileStatusHistory.length = 0; el.textContent = ''; }, 6000);
 }
 
 // ============================================================
@@ -148,6 +171,13 @@ function importEmployeeGroups(wb) {
         alert('קובץ קבוצות עובדים לא תקין:\n' + errors.slice(0, 5).join('\n'));
         return;
     }
+
+    // Reserved name check — must be first, before any other validation
+    if (Object.keys(newGroups).some(g => g.trim() === 'אחר')) {
+        alert('קובץ קבוצות עובדים לא תקין.\nלא ניתן להשתמש בשם "אחר" לקבוצה.\nשם זה שמור לפריטים שאינם משויכים לקבוצה.');
+        return;
+    }
+
     if (errors.length > 0) {
         alert('אזהרות בטעינת קבוצות עובדים:\n' + errors.slice(0, 5).join('\n') +
             (errors.length > 5 ? `\n...ועוד ${errors.length - 5} אזהרות` : ''));
@@ -166,12 +196,6 @@ function importEmployeeGroups(wb) {
     const emptyGroups = Object.entries(newGroups).filter(([_, members]) => members.length === 0).map(([g]) => g);
     if (emptyGroups.length > 0) {
         alert(`אזהרה: ${emptyGroups.length} קבוצות ריקות (ללא חברים):\n${emptyGroups.join(', ')}`);
-    }
-
-    // Reserved name check
-    if ('אחר' in newGroups) {
-        alert('קובץ קבוצות עובדים לא תקין.\nלא ניתן להשתמש בשם "אחר" לקבוצה.\nשם זה שמור לפריטים שאינם משויכים לקבוצה.');
-        return;
     }
 
     if (Object.keys(employeeGroups).length > 0) {
@@ -221,6 +245,13 @@ function importCaseGroups(wb) {
         alert('קובץ קבוצות תיקים לא תקין:\n' + errors.slice(0, 5).join('\n'));
         return;
     }
+
+    // Reserved name check — must be first, before any other validation
+    if (Object.keys(newGroups).some(g => g.trim() === 'אחר')) {
+        alert('קובץ קבוצות תיקים לא תקין.\nלא ניתן להשתמש בשם "אחר" לקבוצה.\nשם זה שמור לפריטים שאינם משויכים לקבוצה.');
+        return;
+    }
+
     if (errors.length > 0) {
         alert('אזהרות בטעינת קבוצות תיקים:\n' + errors.slice(0, 5).join('\n') +
             (errors.length > 5 ? `\n...ועוד ${errors.length - 5} אזהרות` : ''));
@@ -246,12 +277,6 @@ function importCaseGroups(wb) {
     const emptyCaseGroups = Object.entries(newGroups).filter(([_, members]) => members.length === 0).map(([g]) => g);
     if (emptyCaseGroups.length > 0) {
         alert(`אזהרה: ${emptyCaseGroups.length} קבוצות תיקים ריקות (ללא חברים):\n${emptyCaseGroups.join(', ')}`);
-    }
-
-    // Reserved name check
-    if ('אחר' in newGroups) {
-        alert('קובץ קבוצות תיקים לא תקין.\nלא ניתן להשתמש בשם "אחר" לקבוצה.\nשם זה שמור לפריטים שאינם משויכים לקבוצה.');
-        return;
     }
 
     if (Object.keys(caseGroups).length > 0) {
@@ -332,25 +357,25 @@ function parseReport(rows) {
         return;
     }
 
-    // Parse into a temporary array
-    const newEntries = [];
-    const origRawEntries = rawEntries;
-    rawEntries = newEntries; // Format parsers push into rawEntries
+    // Parse into a new array (parsers return entries instead of mutating global)
+    let newEntries;
     if (isFormat2) {
-        parseReportFormat2(rows, headerRowIdx, headerRow);
+        newEntries = parseReportFormat2(rows, headerRowIdx, headerRow);
     } else {
-        parseReportFormat1(rows, headerRowIdx, headerRow);
+        newEntries = parseReportFormat1(rows, headerRowIdx, headerRow);
     }
-    rawEntries = origRawEntries; // Restore original
 
     console.log('Parsed new entries:', newEntries.length);
     // Check 6: No data rows
     if (newEntries.length === 0) { alert('לא נמצאו רשומות תקינות בקובץ.\nוודאו שהקובץ מכיל שורות נתונים מתחת לשורת הכותרת.'); return; }
 
+    // Collect all warnings into a single summary (Issue 13: avoid cascading alerts)
+    const warnings = [];
+
     // Check 7: All dates invalid
     const validDateCount = newEntries.filter(e => e.date instanceof Date && !isNaN(e.date.getTime())).length;
     if (validDateCount === 0) {
-        alert(`אזהרה: כל ${newEntries.length} הרשומות ללא תאריך תקין.\nייתכן שפורמט התאריך בקובץ אינו מזוהה.`);
+        warnings.push(`כל ${newEntries.length} הרשומות ללא תאריך תקין — ייתכן שפורמט התאריך אינו מזוהה.`);
     } else if (validDateCount < newEntries.length) {
         const invalidCount = newEntries.length - validDateCount;
         console.warn(`${invalidCount} רשומות עם תאריך לא תקין מתוך ${newEntries.length}`);
@@ -359,29 +384,29 @@ function parseReport(rows) {
     // Check 8: Negative hours
     const negativeHours = newEntries.filter(e => e.billableHours < 0 || e.workHours < 0);
     if (negativeHours.length > 0) {
-        alert(`אזהרה: ${negativeHours.length} רשומות עם שעות שליליות.\nהנתונים ייטענו כפי שהם.`);
+        warnings.push(`${negativeHours.length} רשומות עם שעות שליליות.`);
     }
 
     // Check 9: Unreasonable hours (>24 per entry)
     const unreasonableHours = newEntries.filter(e => e.billableHours > 24 || e.workHours > 24);
     if (unreasonableHours.length > 0) {
         const examples = unreasonableHours.slice(0, 3).map(e =>
-            `${e.employee}: ${Math.max(e.billableHours, e.workHours)} שעות (${e.caseName})`
+            `  ${e.employee}: ${Math.max(e.billableHours, e.workHours)} שעות (${e.caseName})`
         ).join('\n');
-        alert(`אזהרה: ${unreasonableHours.length} רשומות עם יותר מ-24 שעות:\n${examples}` +
-            (unreasonableHours.length > 3 ? `\n...ועוד ${unreasonableHours.length - 3}` : ''));
+        warnings.push(`${unreasonableHours.length} רשומות עם יותר מ-24 שעות:\n${examples}` +
+            (unreasonableHours.length > 3 ? `\n  ...ועוד ${unreasonableHours.length - 3}` : ''));
     }
 
     // Check 10: Missing employee names
     const noEmployee = newEntries.filter(e => !e.employee || !e.employee.trim());
     if (noEmployee.length > 0) {
-        alert(`אזהרה: ${noEmployee.length} רשומות ללא שם עובד.`);
+        warnings.push(`${noEmployee.length} רשומות ללא שם עובד.`);
     }
 
     // Check 11: Missing client/case
     const noClientCase = newEntries.filter(e => (!e.client || !e.client.trim()) && (!e.caseName || !e.caseName.trim()));
     if (noClientCase.length > 0) {
-        alert(`אזהרה: ${noClientCase.length} רשומות ללא לקוח ותיק.`);
+        warnings.push(`${noClientCase.length} רשומות ללא לקוח ותיק.`);
     }
 
     // Check 12: Duplicate rows
@@ -392,7 +417,12 @@ function parseReport(rows) {
     });
     const internalDups = Object.values(keyCount).filter(c => c > 1).reduce((s, c) => s + (c - 1), 0);
     if (internalDups > 0) {
-        alert(`אזהרה: נמצאו ${internalDups} שורות כפולות בתוך הקובץ.\n(אותו לקוח, תיק, עובד, תאריך ושעות חיוב)`);
+        warnings.push(`${internalDups} שורות כפולות בתוך הקובץ (אותו לקוח, תיק, עובד, תאריך ושעות חיוב).`);
+    }
+
+    // Show all warnings in a single alert
+    if (warnings.length > 0) {
+        alert('אזהרות בטעינת הדוח:\n\n• ' + warnings.join('\n• ') + '\n\nהנתונים ייטענו כפי שהם.');
     }
 
     // If existing data, ask user what to do
@@ -477,8 +507,11 @@ function updateDateFilters() {
         .filter(e => e.date instanceof Date && !isNaN(e.date.getTime()))
         .map(e => e.date.getTime());
     if (validDates.length) {
-        $('#date-from').value = formatDateISO(new Date(Math.min(...validDates)));
-        $('#date-to').value = formatDateISO(new Date(Math.max(...validDates)));
+        // Use reduce instead of Math.min/max spread to avoid stack overflow on large arrays
+        const minDate = validDates.reduce((a, b) => a < b ? a : b);
+        const maxDate = validDates.reduce((a, b) => a > b ? a : b);
+        $('#date-from').value = formatDateISO(new Date(minDate));
+        $('#date-to').value = formatDateISO(new Date(maxDate));
     } else {
         $('#date-from').value = '';
         $('#date-to').value = '';
@@ -489,6 +522,7 @@ function updateDateFilters() {
 // Format 1: Rpt_TD_ByLawyerDate (לקוח + תיק columns in each row)
 // ============================================================
 function parseReportFormat1(rows, headerRowIdx, headerRow) {
+    const entries = [];
     const colMap = {};
     const headerNames = {
         'תיאור': 'description', 'סה"כ': 'total', 'סה״כ': 'total',
@@ -535,7 +569,7 @@ function parseReportFormat1(rows, headerRowIdx, headerRow) {
         const workHours = toNum(row[colMap.workHours]);
         if (billableHours === null && workHours === null) continue;
 
-        rawEntries.push({
+        entries.push({
             employee: currentEmployee || '',
             date: currentDate,
             description: String(desc),
@@ -549,12 +583,14 @@ function parseReportFormat1(rows, headerRowIdx, headerRow) {
             total: toNum(row[colMap.total]) || 0
         });
     }
+    return entries;
 }
 
 // ============================================================
 // Format 2: פרוט דיווחי שעות לפי לקוח/תיק (section headers for client/case)
 // ============================================================
 function parseReportFormat2(rows, headerRowIdx, headerRow) {
+    const entries = [];
     const colMap = {};
     const headerNames = {
         'תיאור': 'description', 'סה"כ': 'total', 'סה״כ': 'total',
@@ -639,7 +675,7 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
         // Track data count for Check 14
         if (lastSectionHeader) lastSectionHeader.dataCount++;
 
-        rawEntries.push({
+        entries.push({
             employee: empCell ? String(empCell).trim() : '',
             date: entryDate,
             description: String(desc),
@@ -662,16 +698,14 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
     // Check 13: Warn about orphan rows
     if (orphanRows > 0) {
         console.warn(`Format 2: ${orphanRows} שורות נתונים לפני כותרת לקוח/תיק ראשונה`);
-        alert(`אזהרה: ${orphanRows} שורות נתונים הופיעו לפני כותרת לקוח/תיק ראשונה.\nשורות אלו נטענו ללא שיוך ללקוח או תיק.`);
     }
 
     // Check 14: Warn about empty sections
     if (emptySections.length > 0) {
-        const list = emptySections.slice(0, 5).join('\n');
         console.warn('Format 2: Empty sections:', emptySections);
-        alert(`אזהרה: ${emptySections.length} כותרות ללא שורות נתונים:\n${list}` +
-            (emptySections.length > 5 ? `\n...ועוד ${emptySections.length - 5}` : ''));
     }
+
+    return entries;
 }
 
 // ============================================================
@@ -713,7 +747,10 @@ function toNum(val) {
 }
 
 function excelDateToJS(serial) {
-    return new Date((Math.floor(serial - 25569)) * 86400 * 1000);
+    // Excel incorrectly treats 1900 as a leap year; serial 60 = Feb 29, 1900 (invalid)
+    // For serials > 60, subtract 1 day to correct for the phantom leap day
+    const adjusted = serial > 60 ? serial - 1 : serial;
+    return new Date(Date.UTC(1899, 11, 30 + Math.floor(adjusted)));
 }
 
 function parseDate(val) {
@@ -723,8 +760,14 @@ function parseDate(val) {
         // Try DD/MM/YYYY first (Hebrew date format)
         const parts = trimmed.split('/');
         if (parts.length === 3) {
-            const d = new Date(parts[2], parts[1] - 1, parts[0]);
-            if (!isNaN(d.getTime())) return d;
+            const day = parseInt(parts[0], 10);
+            const month = parseInt(parts[1], 10);
+            const year = parseInt(parts[2], 10);
+            if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
+                const d = new Date(year, month - 1, day);
+                // Validate the components match to catch rollover (e.g., day 35 → next month)
+                if (!isNaN(d.getTime()) && d.getDate() === day && d.getMonth() === month - 1) return d;
+            }
         }
         // Fallback to native parsing (ISO format, etc.)
         const d = new Date(trimmed);
@@ -758,13 +801,18 @@ function getFilteredEntries() {
     let entries = rawEntries;
     const from = $('#date-from').value;
     const to = $('#date-to').value;
+    const hasDateFilter = from || to;
+    if (hasDateFilter) {
+        // When a date filter is active, exclude entries with no valid date
+        entries = entries.filter(e => e.date instanceof Date && !isNaN(e.date.getTime()));
+    }
     if (from) {
         const fd = new Date(from + 'T00:00:00');
-        if (!isNaN(fd.getTime())) entries = entries.filter(e => !e.date || !(e.date instanceof Date) || e.date >= fd);
+        if (!isNaN(fd.getTime())) entries = entries.filter(e => e.date >= fd);
     }
     if (to) {
         const td = new Date(to + 'T23:59:59');
-        if (!isNaN(td.getTime())) entries = entries.filter(e => !e.date || !(e.date instanceof Date) || e.date <= td);
+        if (!isNaN(td.getTime())) entries = entries.filter(e => e.date <= td);
     }
     return entries;
 }
@@ -815,6 +863,15 @@ function getAllMonths() {
 }
 
 // ============================================================
+// Debounced render for performance on rapid control changes
+// ============================================================
+let _renderPivotTimer;
+function debouncedRenderPivot() {
+    clearTimeout(_renderPivotTimer);
+    _renderPivotTimer = setTimeout(renderPivot, 120);
+}
+
+// ============================================================
 // Tabs
 // ============================================================
 $$('.tab').forEach(tab => {
@@ -837,7 +894,7 @@ $('#value-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
         $('#value-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         valueMode = btn.dataset.value;
-        renderPivot();
+        debouncedRenderPivot();
     });
 });
 
@@ -847,7 +904,7 @@ $('#ungrouped-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
         $('#ungrouped-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         ungroupedMode = btn.dataset.value;
-        renderPivot();
+        debouncedRenderPivot();
     });
 });
 
@@ -864,31 +921,31 @@ $('#col-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
             cb.checked = false;
             groupEmployees = false;
         }
-        renderPivot();
+        debouncedRenderPivot();
     });
 });
 
 // Group employees checkbox
 $('#group-employees-cb').addEventListener('change', (e) => {
     groupEmployees = e.target.checked;
-    renderPivot();
+    debouncedRenderPivot();
 });
 
 // Group cases checkbox
 $('#group-cases-cb').addEventListener('change', (e) => {
     groupCases = e.target.checked;
     rebuildCaseFilter();
-    renderPivot();
+    debouncedRenderPivot();
 });
 
 // Date controls
-$('#date-from').addEventListener('change', () => { renderCleanTable(); renderPivot(); });
-$('#date-to').addEventListener('change', () => { renderCleanTable(); renderPivot(); });
+$('#date-from').addEventListener('change', () => { renderCleanTable(); debouncedRenderPivot(); });
+$('#date-to').addEventListener('change', () => { renderCleanTable(); debouncedRenderPivot(); });
 $('#clear-dates').addEventListener('click', () => {
     $('#date-from').value = '';
     $('#date-to').value = '';
     renderCleanTable();
-    renderPivot();
+    debouncedRenderPivot();
 });
 
 // ============================================================
@@ -908,10 +965,10 @@ function renderCleanTable() {
         <td>${esc(e.caseName)}</td>
         <td>${esc(e.description)}</td>
         <td>${esc(e.status)}</td>
-        <td>${e.rate}</td>
-        <td>${e.workHours}</td>
-        <td>${e.billableHours}</td>
-        <td>${e.total}</td>
+        <td>${esc(String(e.rate))}</td>
+        <td>${esc(String(e.workHours))}</td>
+        <td>${esc(String(e.billableHours))}</td>
+        <td>${esc(String(e.total))}</td>
     </tr>`).join('');
 }
 
@@ -968,21 +1025,6 @@ function renderEmployeeGroups() {
     ).join('');
 
     setupDragDrop('emp');
-    setupGroupClicks('emp');
-}
-
-function setupGroupClicks(type) {
-    const container = type === 'emp' ? $('#employee-groups') : $('#case-groups');
-    if (!container) return;
-    container.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-action]');
-        if (!btn) return;
-        const action = btn.dataset.action;
-        if (action === 'remove-emp-group') { delete employeeGroups[btn.dataset.name]; renderEmployeeGroups(); renderPivot(); }
-        else if (action === 'remove-emp-member') { employeeGroups[btn.dataset.group] = employeeGroups[btn.dataset.group].filter(m => m !== btn.dataset.member); renderEmployeeGroups(); renderPivot(); }
-        else if (action === 'remove-case-group') { delete caseGroups[btn.dataset.name]; renderCaseGroups(); rebuildCaseFilter(); renderPivot(); }
-        else if (action === 'remove-case-member') { caseGroups[btn.dataset.group] = caseGroups[btn.dataset.group].filter(m => m !== btn.dataset.member); renderCaseGroups(); rebuildCaseFilter(); renderPivot(); }
-    });
 }
 
 // ============================================================
@@ -1028,16 +1070,35 @@ function renderCaseGroups() {
     ).join('');
 
     setupDragDrop('case');
-    setupGroupClicks('case');
 }
 
 // ============================================================
-// Drag & Drop
+// Group Clicks — one-time delegated event listeners (avoid accumulation)
+// ============================================================
+(function initGroupClicks() {
+    function handleGroupClick(e) {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        const action = btn.dataset.action;
+        if (action === 'remove-emp-group') { delete employeeGroups[btn.dataset.name]; renderEmployeeGroups(); renderPivot(); }
+        else if (action === 'remove-emp-member') { employeeGroups[btn.dataset.group] = employeeGroups[btn.dataset.group].filter(m => m !== btn.dataset.member); renderEmployeeGroups(); renderPivot(); }
+        else if (action === 'remove-case-group') { delete caseGroups[btn.dataset.name]; renderCaseGroups(); rebuildCaseFilter(); renderPivot(); }
+        else if (action === 'remove-case-member') { caseGroups[btn.dataset.group] = caseGroups[btn.dataset.group].filter(m => m !== btn.dataset.member); renderCaseGroups(); rebuildCaseFilter(); renderPivot(); }
+    }
+    const empContainer = $('#employee-groups');
+    const caseContainer = $('#case-groups');
+    if (empContainer) empContainer.addEventListener('click', handleGroupClick);
+    if (caseContainer) caseContainer.addEventListener('click', handleGroupClick);
+})();
+
+// ============================================================
+// Drag & Drop — uses delegation on stable parent containers
 // ============================================================
 function setupDragDrop(type) {
     const container = type === 'emp' ? $('#employee-groups') : $('#case-groups');
     if (!container) return;
 
+    // Only attach dragstart to newly rendered draggable elements (these are recreated each render)
     container.querySelectorAll('[draggable="true"]').forEach(tag => {
         tag.addEventListener('dragstart', (e) => {
             e.dataTransfer.setData('text/plain', JSON.stringify({
@@ -1046,35 +1107,59 @@ function setupDragDrop(type) {
             }));
         });
     });
+}
 
-    container.querySelectorAll('.group-members').forEach(zone => {
-        zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
-        zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
-        zone.addEventListener('drop', (e) => {
-            e.preventDefault(); zone.classList.remove('drag-over');
-            const payload = JSON.parse(e.dataTransfer.getData('text/plain'));
-            if (payload.type !== type) return;
-            const groups = type === 'emp' ? employeeGroups : caseGroups;
-            if (payload.fromGroup && groups[payload.fromGroup]) groups[payload.fromGroup] = groups[payload.fromGroup].filter(m => m !== payload.member);
-            if (!groups[zone.dataset.group].includes(payload.member)) groups[zone.dataset.group].push(payload.member);
-            if (type === 'emp') renderEmployeeGroups(); else { renderCaseGroups(); rebuildCaseFilter(); }
-            renderPivot();
-        });
-    });
+// One-time delegated drag-over/drop listeners on stable parent containers
+(function initDragDropDelegation() {
+    function handleDrop(e, type) {
+        const zone = e.target.closest('.group-members');
+        if (!zone || zone.dataset.type !== type) return;
+        e.preventDefault(); zone.classList.remove('drag-over');
+        let payload;
+        try { payload = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return; }
+        if (!payload || typeof payload.member !== 'string' || payload.type !== type) return;
+        const groups = type === 'emp' ? employeeGroups : caseGroups;
+        if (payload.fromGroup && groups[payload.fromGroup]) groups[payload.fromGroup] = groups[payload.fromGroup].filter(m => m !== payload.member);
+        if (groups[zone.dataset.group] && !groups[zone.dataset.group].includes(payload.member)) groups[zone.dataset.group].push(payload.member);
+        if (type === 'emp') renderEmployeeGroups(); else { renderCaseGroups(); rebuildCaseFilter(); }
+        renderPivot();
+    }
 
-    const unassignedZone = type === 'emp' ? $('#unassigned-employees') : $('#unassigned-cases');
-    unassignedZone.addEventListener('dragover', (e) => { e.preventDefault(); unassignedZone.classList.add('drag-over'); });
-    unassignedZone.addEventListener('dragleave', () => unassignedZone.classList.remove('drag-over'));
-    unassignedZone.addEventListener('drop', (e) => {
-        e.preventDefault(); unassignedZone.classList.remove('drag-over');
-        const payload = JSON.parse(e.dataTransfer.getData('text/plain'));
-        if (payload.type !== type) return;
+    function handleUnassignedDrop(e, type) {
+        e.preventDefault();
+        e.currentTarget.classList.remove('drag-over');
+        let payload;
+        try { payload = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return; }
+        if (!payload || typeof payload.member !== 'string' || payload.type !== type) return;
         const groups = type === 'emp' ? employeeGroups : caseGroups;
         if (payload.fromGroup && groups[payload.fromGroup]) groups[payload.fromGroup] = groups[payload.fromGroup].filter(m => m !== payload.member);
         if (type === 'emp') renderEmployeeGroups(); else { renderCaseGroups(); rebuildCaseFilter(); }
         renderPivot();
+    }
+
+    ['emp', 'case'].forEach(type => {
+        const container = type === 'emp' ? $('#employee-groups') : $('#case-groups');
+        if (!container) return;
+
+        // Delegated dragover/dragleave/drop on the container
+        container.addEventListener('dragover', (e) => {
+            const zone = e.target.closest('.group-members');
+            if (zone && zone.dataset.type === type) { e.preventDefault(); zone.classList.add('drag-over'); }
+        });
+        container.addEventListener('dragleave', (e) => {
+            const zone = e.target.closest('.group-members');
+            if (zone) zone.classList.remove('drag-over');
+        });
+        container.addEventListener('drop', (e) => handleDrop(e, type));
+
+        // Unassigned zone — stable element
+        const unassignedZone = type === 'emp' ? $('#unassigned-employees') : $('#unassigned-cases');
+        if (!unassignedZone) return;
+        unassignedZone.addEventListener('dragover', (e) => { e.preventDefault(); unassignedZone.classList.add('drag-over'); });
+        unassignedZone.addEventListener('dragleave', () => unassignedZone.classList.remove('drag-over'));
+        unassignedZone.addEventListener('drop', (e) => handleUnassignedDrop(e, type));
     });
-}
+})();
 
 // ============================================================
 // Pivot Table
@@ -1144,7 +1229,7 @@ function renderPivot() {
         getRow = (e) => caseGroupMap[e.caseKey] || (ungroupedMode === 'individual' ? e.caseKey : 'אחר');
         rowLabel = (r) => {
             // If it's a group name, return as-is; if it's a caseKey, format it
-            if (Object.keys(caseGroups).includes(r) || r === 'אחר') return r;
+            if (groupNames.has(r) || r === 'אחר') return r;
             return caseLabel(r);
         };
     } else {
@@ -1555,6 +1640,13 @@ async function captureElement(el, scale) {
 
 async function generatePdfReport(entries) {
     const { jsPDF } = window.jspdf;
+    // Track temp DOM elements for cleanup on error
+    const _tempElements = [];
+    function _addTemp(el) { document.body.appendChild(el); _tempElements.push(el); return el; }
+    function _removeTemp(el) { if (el.parentNode) el.parentNode.removeChild(el); const idx = _tempElements.indexOf(el); if (idx >= 0) _tempElements.splice(idx, 1); }
+    function _cleanupAllTemp() { _tempElements.forEach(el => { if (el.parentNode) el.parentNode.removeChild(el); }); _tempElements.length = 0; }
+
+    try {
 
     // --- Gather metadata ---
     const fromVal = $('#date-from').value;
@@ -1566,8 +1658,9 @@ async function generatePdfReport(entries) {
     else {
         const dates = entries.filter(e => e.date instanceof Date && !isNaN(e.date.getTime())).map(e => e.date);
         if (dates.length) {
-            const minD = new Date(Math.min(...dates.map(d => d.getTime())));
-            const maxD = new Date(Math.max(...dates.map(d => d.getTime())));
+            const timestamps = dates.map(d => d.getTime());
+            const minD = new Date(timestamps.reduce((a, b) => a < b ? a : b));
+            const maxD = new Date(timestamps.reduce((a, b) => a > b ? a : b));
             dateRange = `${formatDateHebrew(minD)} - ${formatDateHebrew(maxD)}`;
         }
     }
@@ -1623,9 +1716,9 @@ async function generatePdfReport(entries) {
         direction: rtl; background: white; width: ${Math.round(contentW * 3.78)}px;
     `;
     titleEl.textContent = titleText;
-    document.body.appendChild(titleEl);
+    _addTemp(titleEl);
     const titleCanvas = await captureElement(titleEl, 2);
-    document.body.removeChild(titleEl);
+    _removeTemp(titleEl);
     addImage(titleCanvas, contentW, 20);
 
     curY += 2;
@@ -1685,7 +1778,7 @@ async function generatePdfReport(entries) {
         position: absolute; left: -9999px; top: 0;
         background: white; width: ${targetPxW}px; overflow: visible;
     `;
-    document.body.appendChild(tableContainer);
+    _addTemp(tableContainer);
 
     // Shrink font until the table fits within the page
     let tableFontSize = 11;
@@ -1705,42 +1798,10 @@ async function generatePdfReport(entries) {
     }
 
     const tableCanvas = await captureElement(tableContainer, 2);
-    document.body.removeChild(tableContainer);
+    _removeTemp(tableContainer);
     addImage(tableCanvas, contentW, availableH);
 
     // --- Charts ---
-    function addChartImage(chartCanvas, title, widthMm, maxHeightMm) {
-        if (!chartCanvas || chartCanvas.width === 0) return;
-        const ratio = chartCanvas.height / chartCanvas.width;
-        let imgH = widthMm * ratio;
-        if (imgH > maxHeightMm) imgH = maxHeightMm;
-        const titleH = title ? 7 : 0;
-        ensureSpace(imgH + titleH + 4);
-
-        if (title) {
-            // Render title as a temporary element
-            const tEl = document.createElement('div');
-            tEl.style.cssText = `
-                font-family: 'Assistant', sans-serif; font-size: 14px; font-weight: 700;
-                color: #1a2a4a; text-align: center; padding: 4px 8px;
-                direction: rtl; background: white; width: ${Math.round(widthMm * 3.78)}px;
-            `;
-            tEl.textContent = title;
-            document.body.appendChild(tEl);
-            // Capture synchronously is not possible, so we do it inline below
-            document.body.removeChild(tEl);
-            // Instead, just leave space — chart has its own legend/labels
-            curY += 1;
-        }
-
-        const imgData = chartCanvas.toDataURL('image/png');
-        const imgW2 = widthMm;
-        let imgH2 = imgW2 * ratio;
-        if (imgH2 > maxHeightMm) { imgH2 = maxHeightMm; }
-        const xOff = margin + (contentW - imgW2) / 2;
-        doc.addImage(imgData, 'PNG', xOff, curY, imgW2, imgH2);
-        curY += imgH2 + 4;
-    }
 
     async function addChartWithTitle(chartCanvas, title, widthMm, maxHeightMm) {
         if (!chartCanvas || chartCanvas.width === 0) return;
@@ -1761,11 +1822,11 @@ async function generatePdfReport(entries) {
         img.src = chartCanvas.toDataURL('image/png');
         img.style.cssText = 'width: 100%; display: block;';
         wrapper.appendChild(img);
-        document.body.appendChild(wrapper);
+        _addTemp(wrapper);
         // Wait for image to load
         await new Promise(r => { if (img.complete) r(); else img.onload = r; });
         const compositeCanvas = await captureElement(wrapper, 2);
-        document.body.removeChild(wrapper);
+        _removeTemp(wrapper);
 
         const cRatio = compositeCanvas.height / compositeCanvas.width;
         let cH = widthMm * cRatio;
@@ -1835,9 +1896,9 @@ async function generatePdfReport(entries) {
             pairWrapper.appendChild(empty);
         }
 
-        document.body.appendChild(pairWrapper);
+        _addTemp(pairWrapper);
         const pairCanvas = await captureElement(pairWrapper, 2);
-        document.body.removeChild(pairWrapper);
+        _removeTemp(pairWrapper);
 
         const pRatio = pairCanvas.height / pairCanvas.width;
         let pH = contentW * pRatio;
@@ -1861,6 +1922,11 @@ async function generatePdfReport(entries) {
     }
 
     doc.save('דוח_שעות.pdf');
+
+    } finally {
+        // Clean up any orphaned temp DOM elements
+        _cleanupAllTemp();
+    }
 }
 
 // ============================================================
@@ -1946,12 +2012,21 @@ function escData(str) {
     const el = $('#visitor-count');
     if (!el) return;
     try {
-        const resp = await fetch('https://api.counterapi.dev/v1/amirv01-time-report/visits/up');
-        if (resp.ok) {
-            const data = await resp.json();
-            el.textContent = data.count != null ? data.count.toLocaleString() : '—';
+        // Only increment once per session to avoid inflating count on refresh
+        if (!sessionStorage.getItem('visitor_counted')) {
+            const resp = await fetch('https://api.counterapi.dev/v1/amirv01-time-report/visits/up');
+            if (resp.ok) {
+                const data = await resp.json();
+                el.textContent = data.count != null ? data.count.toLocaleString() : '—';
+                sessionStorage.setItem('visitor_counted', '1');
+            } else { el.textContent = '—'; }
         } else {
-            el.textContent = '—';
+            // Already counted this session — just fetch current count without incrementing
+            const resp = await fetch('https://api.counterapi.dev/v1/amirv01-time-report/visits');
+            if (resp.ok) {
+                const data = await resp.json();
+                el.textContent = data.count != null ? data.count.toLocaleString() : '—';
+            } else { el.textContent = '—'; }
         }
     } catch (e) {
         el.textContent = '—';

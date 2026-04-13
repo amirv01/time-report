@@ -141,7 +141,7 @@ main {
 
 .file-name {
     font-size: 0.85rem;
-    color: var(--gold);
+    color: #7a6320;
     font-weight: 600;
 }
 
@@ -660,6 +660,12 @@ footer .footer-meta {
 }
 
 /* Responsive */
+@media (max-width: 1200px) {
+    .settings-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
 @media (max-width: 900px) {
     .settings-grid {
         grid-template-columns: 1fr;
@@ -669,5 +675,30 @@ footer .footer-meta {
     }
     main {
         padding: 1rem;
+    }
+}
+
+@media (max-width: 600px) {
+    .chart-area {
+        max-height: 300px;
+    }
+    .chart-area canvas {
+        max-height: 260px;
+    }
+    .sub-charts-grid {
+        grid-template-columns: 1fr;
+    }
+    .tabs {
+        flex-wrap: wrap;
+    }
+    .tab {
+        padding: 0.5rem 0.8rem;
+        font-size: 0.8rem;
+    }
+    header h1 {
+        font-size: 1.2rem;
+    }
+    .upload-row {
+        flex-wrap: wrap;
     }
 }
