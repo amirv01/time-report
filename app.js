@@ -405,7 +405,7 @@ function parseReport(rows) {
     });
     const internalDups = Object.values(keyCount).filter(c => c > 1).reduce((s, c) => s + (c - 1), 0);
     if (internalDups > 0) {
-        warnings.push(`${internalDups} שורות כפולות בתוך הקובץ (אותו לקוח, תיק, עובד, תאריך ושעות חיוב).`);
+        warnings.push(`${internalDups} שורות כפולות בתוך הקובץ (אותו לקוח, תיק, עובד, תאריך, תיאור ושעות חיוב).`);
     }
 
     // Show all warnings in a single alert
@@ -457,7 +457,7 @@ function parseReport(rows) {
 function entryKey(e) {
     const dateStr = (e.date instanceof Date && !isNaN(e.date.getTime()))
         ? e.date.toISOString().slice(0, 10) : '';
-    return `${e.client}|${e.caseName}|${e.employee}|${dateStr}|${e.billableHours}`;
+    return `${e.client}|${e.caseName}|${e.employee}|${dateStr}|${e.billableHours}|${e.description || ''}`;
 }
 
 function appendEntries(newEntries) {
@@ -471,7 +471,7 @@ function appendEntries(newEntries) {
     if (duplicates.length > 0) {
         const ignoreDups = confirm(
             `נמצאו ${duplicates.length} רשומות כפולות (מתוך ${newEntries.length}).\n` +
-            `רשומה כפולה = אותו לקוח, תיק, עובד, תאריך ושעות חיוב.\n\n` +
+            `רשומה כפולה = אותו לקוח, תיק, עובד, תאריך, תיאור ושעות חיוב.\n\n` +
             `לחץ "אישור" כדי להתעלם מהכפולות ולצרף רק ${unique.length} רשומות חדשות.\n` +
             `לחץ "ביטול" כדי לצרף את כל ${newEntries.length} הרשומות כולל הכפולות.`
         );
