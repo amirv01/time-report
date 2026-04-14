@@ -369,17 +369,15 @@ function parseReport(rows) {
     // Check 6: No data rows
     if (newEntries.length === 0) { alert('לא נמצאו רשומות תקינות בקובץ.\nוודאו שהקובץ מכיל שורות נתונים מתחת לשורת הכותרת.'); return; }
 
-    // Collect all warnings into a single summary (Issue 13: avoid cascading alerts)
-    const warnings = [];
+    // Reject file if entries are missing case, client or date — wrong format
+    const formatErrorMsg = 'קובץ שגוי. המערכת מקבלת דוחות משני סוגים: דוח שעות מפורט לפי עורך דין ותאריך ממערכת הדוחות לשותף, או פרוט דיווחי שעות לפי לקוח/תיק שהתקבל מהנהלת חשבונות.';
+    const noClientCase = newEntries.filter(e => (!e.client || !e.client.trim()) && (!e.caseName || !e.caseName.trim()));
+    if (noClientCase.length > 0) { alert(formatErrorMsg); return; }
+    const noDate = newEntries.filter(e => !(e.date instanceof Date) || isNaN(e.date.getTime()));
+    if (noDate.length > 0) { alert(formatErrorMsg); return; }
 
-    // Check 7: All dates invalid
-    const validDateCount = newEntries.filter(e => e.date instanceof Date && !isNaN(e.date.getTime())).length;
-    if (validDateCount === 0) {
-        warnings.push(`כל ${newEntries.length} הרשומות ללא תאריך תקין — ייתכן שפורמט התאריך אינו מזוהה.`);
-    } else if (validDateCount < newEntries.length) {
-        const invalidCount = newEntries.length - validDateCount;
-        console.warn(`${invalidCount} רשומות עם תאריך לא תקין מתוך ${newEntries.length}`);
-    }
+    // Collect all warnings into a single summary
+    const warnings = [];
 
     // Check 8: Negative hours
     const negativeHours = newEntries.filter(e => e.billableHours < 0 || e.workHours < 0);
@@ -395,18 +393,6 @@ function parseReport(rows) {
         ).join('\n');
         warnings.push(`${unreasonableHours.length} רשומות עם יותר מ-24 שעות:\n${examples}` +
             (unreasonableHours.length > 3 ? `\n  ...ועוד ${unreasonableHours.length - 3}` : ''));
-    }
-
-    // Check 10: Missing employee names
-    const noEmployee = newEntries.filter(e => !e.employee || !e.employee.trim());
-    if (noEmployee.length > 0) {
-        warnings.push(`${noEmployee.length} רשומות ללא שם עובד.`);
-    }
-
-    // Check 11: Missing client/case
-    const noClientCase = newEntries.filter(e => (!e.client || !e.client.trim()) && (!e.caseName || !e.caseName.trim()));
-    if (noClientCase.length > 0) {
-        warnings.push(`${noClientCase.length} רשומות ללא לקוח ותיק.`);
     }
 
     // Check 12: Duplicate rows
