@@ -80,13 +80,15 @@
                 <div class="settings-panel">
                     <h3>השורות בטבלת סיכום</h3>
                     <div class="control-group">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="group-cases-cb" checked />
-                            <span>תיקים לפי קבוצות</span>
-                        </label>
+                        <label>קיבוץ תיקים:</label>
+                        <div class="toggle-group" id="case-group-mode-toggle">
+                            <button class="toggle-btn" data-value="none">ללא קיבוץ</button>
+                            <button class="toggle-btn" data-value="client">לפי לקוח</button>
+                            <button class="toggle-btn active" data-value="groups">לפי קבוצות</button>
+                        </div>
                     </div>
                     <div class="control-group" id="case-filter-group">
-                        <label>קבוצות תיקים להצגה:</label>
+                        <label id="case-filter-label">קבוצות תיקים להצגה:</label>
                         <div id="case-filter-list" class="checkbox-list"></div>
                     </div>
                 </div>
@@ -120,6 +122,14 @@
             </div>
             <div id="chart-area" class="chart-area">
                 <canvas id="pivot-chart"></canvas>
+            </div>
+            <div id="sub-chart-mode-area" class="sub-chart-mode-area hidden">
+                <label>גרפים משניים:</label>
+                <div class="toggle-group toggle-group-inline" id="sub-chart-mode-toggle">
+                    <button class="toggle-btn toggle-btn-sm" data-value="case">לפי תיק</button>
+                    <button class="toggle-btn toggle-btn-sm" data-value="casegroup">לפי קבוצת תיקים</button>
+                    <button class="toggle-btn toggle-btn-sm" data-value="client">לפי לקוח</button>
+                </div>
             </div>
             <div id="totals-chart-area" class="chart-area hidden">
                 <h4 style="text-align:center; font-family:var(--font-heading); color:var(--navy); margin-bottom:0.5rem;">מצטבר בכל התיקים</h4>

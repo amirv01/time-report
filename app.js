@@ -11,8 +11,10 @@ let valueMode = 'billable';       // 'billable' | 'work'
 let ungroupedMode = 'individual';  // 'individual' | 'other'
 let colMode = 'months';            // 'months' | 'employees'
 let groupEmployees = false;
-let groupCases = true;
-let selectedCaseGroups = new Set(); // which case groups to show in pivot
+let caseGroupMode = 'groups';       // 'none' | 'client' | 'groups'
+let selectedCaseGroups = new Set(); // which case groups/clients to show in pivot
+let subChartMode = null;            // 'case' | 'casegroup' | 'client' — null = use smart default
+let subChartModeManual = false;     // true once user clicks the sub-chart toggle
 let pivotChart = null;              // Chart.js instance
 let totalsChart = null;             // Totals bar chart instance
 let subCharts = [];                 // Sub chart instances
@@ -699,8 +701,27 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
 // ============================================================
 function rebuildCaseFilter() {
     const container = $('#case-filter-list');
-    const groupNames = Object.keys(caseGroups);
-    const items = [...groupNames, 'אחר'];
+    const filterGroup = $('#case-filter-group');
+    const filterLabel = $('#case-filter-label');
+
+    if (caseGroupMode === 'none') {
+        // No filter needed for individual cases
+        if (filterGroup) filterGroup.style.display = 'none';
+        return;
+    }
+
+    if (filterGroup) filterGroup.style.display = '';
+
+    let items;
+    if (caseGroupMode === 'client') {
+        // Show unique client names as filter checkboxes
+        items = getAllClients();
+        if (filterLabel) filterLabel.textContent = 'לקוחות להצגה:';
+    } else {
+        // groups mode — show case groups + אחר
+        items = [...Object.keys(caseGroups), 'אחר'];
+        if (filterLabel) filterLabel.textContent = 'קבוצות תיקים להצגה:';
+    }
 
     // If selectedCaseGroups is empty, select all
     if (selectedCaseGroups.size === 0) {
@@ -821,6 +842,12 @@ function getAllCases() {
     return [...cases.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
+function getAllClients() {
+    const clients = new Set();
+    rawEntries.forEach(e => { if (e.client && e.client.trim()) clients.add(e.client); });
+    return [...clients].sort();
+}
+
 function getAssignedCases() {
     const assigned = new Set();
     Object.values(caseGroups).forEach(members => members.forEach(m => assigned.add(m)));
@@ -917,11 +944,30 @@ $('#group-employees-cb').addEventListener('change', (e) => {
     debouncedRenderPivot();
 });
 
-// Group cases checkbox
-$('#group-cases-cb').addEventListener('change', (e) => {
-    groupCases = e.target.checked;
-    rebuildCaseFilter();
-    debouncedRenderPivot();
+// Case group mode toggle (none/client/groups)
+$('#case-group-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        $('#case-group-mode-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        caseGroupMode = btn.dataset.value;
+        // Show/hide ungrouped toggle — only relevant in 'groups' mode
+        const ungroupedToggle = $('#ungrouped-toggle').closest('.control-group');
+        if (ungroupedToggle) ungroupedToggle.style.display = caseGroupMode === 'groups' ? '' : 'none';
+        selectedCaseGroups.clear(); // reset filter for new mode
+        rebuildCaseFilter();
+        debouncedRenderPivot();
+    });
+});
+
+// Sub-chart mode toggle (below main chart, employees mode only)
+$('#sub-chart-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        $('#sub-chart-mode-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        subChartMode = btn.dataset.value;
+        subChartModeManual = true;
+        debouncedRenderPivot();
+    });
 });
 
 // Date controls
@@ -1195,7 +1241,18 @@ function renderPivot() {
     let getRow; // function: entry -> row label
     let rowLabel; // function: row key -> display label
 
-    if (groupCases && Object.keys(caseGroups).length > 0) {
+    if (caseGroupMode === 'client') {
+        // Group by client name
+        const allClients = getAllClients();
+        // Filter by selected clients
+        if (selectedCaseGroups.size > 0) {
+            rowKeys = allClients.filter(c => selectedCaseGroups.has(c));
+        } else {
+            rowKeys = allClients;
+        }
+        getRow = (e) => e.client || 'ללא לקוח';
+        rowLabel = (r) => r;
+    } else if (caseGroupMode === 'groups' && Object.keys(caseGroups).length > 0) {
         const caseGroupMap = {};
         Object.entries(caseGroups).forEach(([gName, members]) => {
             members.forEach(m => { caseGroupMap[m] = gName; });
@@ -1214,12 +1271,11 @@ function renderPivot() {
         }).sort();
         getRow = (e) => caseGroupMap[e.caseKey] || (ungroupedMode === 'individual' ? e.caseKey : 'אחר');
         rowLabel = (r) => {
-            // If it's a group name, return as-is; if it's a caseKey, format it
             if (groupNames.has(r) || r === 'אחר') return r;
             return caseLabel(r);
         };
     } else {
-        // Individual cases
+        // No grouping — individual cases
         const allCases = getAllCases();
         rowKeys = allCases.map(c => c.key);
         getRow = (e) => e.caseKey;
@@ -1247,7 +1303,8 @@ function renderPivot() {
     });
 
     // --- Render ---
-    const cornerLabel = colMode === 'months' ? 'תיק / חודש' : 'תיק / עובד';
+    const rowTypeLabel = caseGroupMode === 'client' ? 'לקוח' : (caseGroupMode === 'groups' && Object.keys(caseGroups).length > 0 ? 'קבוצה' : 'תיק');
+    const cornerLabel = colMode === 'months' ? `${rowTypeLabel} / חודש` : `${rowTypeLabel} / עובד`;
     const thead = $('#pivot-table thead');
     const tbody = $('#pivot-table tbody');
 
@@ -1309,7 +1366,7 @@ function renderPivot() {
     }
 
     // --- Render chart ---
-    renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGroupLabels, subBarData);
+    renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGroupLabels, subBarData, getCol);
 }
 
 // ============================================================
@@ -1330,7 +1387,7 @@ const CASE_COLORS = [
     '#80b050', '#c07070', '#3a9070', '#d0a050', '#5a7ab0', '#a06a50'
 ];
 
-function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGroupLabels, subBarData) {
+function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGroupLabels, subBarData, getCol) {
     const canvas = $('#pivot-chart');
     if (!canvas) return;
 
@@ -1346,9 +1403,33 @@ function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGrou
     const colColorMap = {};
     cols.forEach((c, i) => { colColorMap[c] = CHART_COLORS[i % CHART_COLORS.length]; });
 
+    // Show/hide sub-chart mode toggle
+    const subChartModeArea = $('#sub-chart-mode-area');
+
     if (colMode === 'employees') {
+        // --- Smart default for sub-chart mode ---
+        const clients = getAllClients();
+        const hasCaseGroups = Object.keys(caseGroups).length > 0;
+        if (!subChartModeManual) {
+            if (clients.length > 1) subChartMode = 'client';
+            else if (hasCaseGroups) subChartMode = 'casegroup';
+            else subChartMode = 'case';
+        }
+        // Update toggle button active state
+        if (subChartModeArea) {
+            subChartModeArea.classList.remove('hidden');
+            // Enable/disable casegroup button
+            const cgBtn = subChartModeArea.querySelector('[data-value="casegroup"]');
+            if (cgBtn) {
+                cgBtn.disabled = !hasCaseGroups;
+                cgBtn.style.opacity = hasCaseGroups ? '' : '0.4';
+            }
+            subChartModeArea.querySelectorAll('.toggle-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.value === subChartMode);
+            });
+        }
+
         // Include ALL employees in every pie chart (zeros hidden by legend filter)
-        // so that colors are always consistent across main + sub charts
         const allLabels = cols;
         const allColors = cols.map(c => colColorMap[c]);
         const mainData = cols.map(c => colTotals[c] || 0);
@@ -1362,9 +1443,52 @@ function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGrou
             options: pieOptions('right', 12)
         });
 
-        // Sub pie charts
-        renderSubCharts(cols, rowKeys, rowLabel, pivotData, colColorMap, 'pie');
+        // --- Build sub-chart data based on subChartMode ---
+        const entries = getFilteredEntries();
+        const hourKey = valueMode === 'billable' ? 'billableHours' : 'workHours';
+        let subRowKeys, subGetRow, subRowLabel, subPivotData;
+
+        if (subChartMode === 'client') {
+            subRowKeys = clients;
+            subGetRow = (e) => e.client || 'ללא לקוח';
+            subRowLabel = (r) => r;
+        } else if (subChartMode === 'casegroup' && hasCaseGroups) {
+            const caseGroupMap = {};
+            Object.entries(caseGroups).forEach(([gName, members]) => {
+                members.forEach(m => { caseGroupMap[m] = gName; });
+            });
+            const rowSet = new Set();
+            getAllCases().forEach(c => {
+                if (caseGroupMap[c.key]) rowSet.add(caseGroupMap[c.key]);
+                else rowSet.add('אחר');
+            });
+            subRowKeys = [...rowSet].sort();
+            subGetRow = (e) => caseGroupMap[e.caseKey] || 'אחר';
+            subRowLabel = (r) => r;
+        } else {
+            // by individual case
+            const allCases = getAllCases();
+            subRowKeys = allCases.map(c => c.key);
+            subGetRow = (e) => e.caseKey;
+            subRowLabel = (r) => caseLabel(r);
+        }
+
+        // Build sub pivot data: { rowKey: { col: hours } }
+        subPivotData = {};
+        subRowKeys.forEach(r => { subPivotData[r] = {}; });
+        entries.forEach(e => {
+            const row = subGetRow(e);
+            if (!subPivotData[row]) return;
+            const col = getCol(e);
+            const val = e[hourKey];
+            subPivotData[row][col] = (subPivotData[row][col] || 0) + val;
+        });
+
+        renderSubCharts(cols, subRowKeys, subRowLabel, subPivotData, colColorMap, 'pie');
     } else {
+        // Hide sub-chart mode toggle in months mode
+        if (subChartModeArea) subChartModeArea.classList.add('hidden');
+
         // Main bar chart (uses CASE_COLORS to distinguish from employee-group charts below)
         const datasets = rowKeys.map((r, i) => {
             const color = CASE_COLORS[i % CASE_COLORS.length];

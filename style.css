@@ -460,6 +460,32 @@ tbody tr:nth-child(even):hover {
     width: 100% !important;
 }
 
+/* Sub-chart mode toggle area */
+.sub-chart-mode-area {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    padding: 0.5rem 0;
+}
+
+.sub-chart-mode-area label {
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-light);
+}
+
+.toggle-group-inline {
+    display: inline-flex;
+}
+
+.toggle-btn-sm {
+    padding: 0.25rem 0.7rem;
+    font-size: 0.8rem;
+}
+
 /* Sub-charts grid */
 .sub-charts-grid {
     display: grid;
