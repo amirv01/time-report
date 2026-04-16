@@ -16,6 +16,10 @@ let selectedCaseGroups = new Set(); // which case groups/clients to show in pivo
 let subChartMode = null;            // 'case' | 'casegroup' | 'client' — null = use smart default
 let subChartModeManual = false;     // true once user clicks the sub-chart toggle
 let chartDistMode = 'employees';    // 'employees' | 'cases' — pie chart distribution mode
+let selectedEmployees = new Set();  // empty = all selected (no filter)
+let selectedSubCharts = new Set();  // empty = all sub-charts shown
+let _lastSubChartArgs = null;       // cached for re-render from sub-chart filter
+let caseFilterTS = null, empFilterTS = null, subChartFilterTS = null;
 let pivotChart = null;              // Chart.js instance
 let totalsChart = null;             // Totals bar chart instance
 let subCharts = [];                 // Sub chart instances
@@ -440,6 +444,7 @@ function parseReport(rows) {
     // Update date filters based on all current entries
     updateDateFilters();
     rebuildCaseFilter();
+    rebuildEmployeeFilter();
 
     try {
         $('#controls-section').classList.remove('hidden');
@@ -701,47 +706,50 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
 // Case filter checkboxes
 // ============================================================
 function rebuildCaseFilter() {
-    const container = $('#case-filter-list');
     const filterGroup = $('#case-filter-group');
     const filterLabel = $('#case-filter-label');
 
     if (caseGroupMode === 'none') {
-        // No filter needed for individual cases
         if (filterGroup) filterGroup.style.display = 'none';
         return;
     }
-
     if (filterGroup) filterGroup.style.display = '';
 
     let items;
     if (caseGroupMode === 'client') {
-        // Show unique client names as filter checkboxes
         items = getAllClients();
         if (filterLabel) filterLabel.textContent = 'לקוחות להצגה:';
     } else {
-        // groups mode — show case groups + אחר
         items = [...Object.keys(caseGroups), 'אחר'];
         if (filterLabel) filterLabel.textContent = 'קבוצות תיקים להצגה:';
     }
 
-    // If selectedCaseGroups is empty, select all
     if (selectedCaseGroups.size === 0) {
         items.forEach(item => selectedCaseGroups.add(item));
     }
 
-    container.innerHTML = items.map(name => {
-        const checked = selectedCaseGroups.has(name) ? 'checked' : '';
-        return `<label><input type="checkbox" value="${escData(name)}" ${checked} />${esc(name)}</label>`;
-    }).join('');
+    if (!caseFilterTS) return;
+    caseFilterTS.clearOptions();
+    items.forEach(item => caseFilterTS.addOption({ value: item, text: item }));
+    caseFilterTS.refreshOptions(false);
+    caseFilterTS.setValue([...selectedCaseGroups], true);
+}
 
-    // Add event listeners
-    container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-        cb.addEventListener('change', () => {
-            if (cb.checked) selectedCaseGroups.add(cb.value);
-            else selectedCaseGroups.delete(cb.value);
-            renderPivot();
-        });
-    });
+function rebuildEmployeeFilter() {
+    if (!empFilterTS) return;
+    const allEmps = getAllEmployees();
+    if (allEmps.length === 0) return;
+
+    const validEmpSet = new Set(allEmps);
+    selectedEmployees = new Set([...selectedEmployees].filter(e => validEmpSet.has(e)));
+    if (selectedEmployees.size === 0) {
+        allEmps.forEach(e => selectedEmployees.add(e));
+    }
+
+    empFilterTS.clearOptions();
+    allEmps.forEach(emp => empFilterTS.addOption({ value: emp, text: emp }));
+    empFilterTS.refreshOptions(false);
+    empFilterTS.setValue([...selectedEmployees], true);
 }
 
 // ============================================================
@@ -821,6 +829,9 @@ function getFilteredEntries() {
     if (to) {
         const td = new Date(to + 'T23:59:59');
         if (!isNaN(td.getTime())) entries = entries.filter(e => e.date <= td);
+    }
+    if (selectedEmployees.size > 0) {
+        entries = entries.filter(e => selectedEmployees.has(e.employee));
     }
     return entries;
 }
@@ -1242,6 +1253,9 @@ function renderPivot() {
             getCol = (e) => empGroupMap[e.employee] || (ungroupedMode === 'individual' ? e.employee : 'אחר');
         } else {
             cols = getAllEmployees();
+            if (selectedEmployees.size > 0) {
+                cols = cols.filter(emp => selectedEmployees.has(emp));
+            }
             getCol = (e) => e.employee || 'ללא עובד';
             if (!cols.includes('ללא עובד') && entries.some(e => !e.employee)) cols.push('ללא עובד');
         }
@@ -1686,19 +1700,58 @@ function barOptions(stacked) {
     };
 }
 
+function reRenderSubCharts() {
+    if (!_lastSubChartArgs) return;
+    subCharts.forEach(c => c.destroy());
+    subCharts = [];
+    $('#sub-charts-area').innerHTML = '';
+    renderSubCharts(..._lastSubChartArgs);
+}
+
+function rebuildSubChartFilter(validRows, rowLabelFn) {
+    const area = $('#sub-chart-filter-area');
+    if (!area || !subChartFilterTS) return;
+
+    if (!validRows || validRows.length < 2) {
+        area.classList.add('hidden');
+        return;
+    }
+    area.classList.remove('hidden');
+
+    const validKeySet = new Set(validRows.map(r => String(r)));
+    selectedSubCharts = new Set([...selectedSubCharts].filter(k => validKeySet.has(k)));
+
+    subChartFilterTS.clearOptions();
+    validRows.forEach(r => subChartFilterTS.addOption({ value: String(r), text: rowLabelFn(r) }));
+    subChartFilterTS.refreshOptions(false);
+
+    if (selectedSubCharts.size === 0) {
+        selectedSubCharts = new Set(validRows.map(r => String(r)));
+    }
+    subChartFilterTS.setValue([...selectedSubCharts], true);
+}
+
 function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, empGroupLabels, colLabelFn) {
+    _lastSubChartArgs = [cols, rowKeys, rowLabel, dataMap, colorMap, chartType, empGroupLabels, colLabelFn];
     const container = $('#sub-charts-area');
     if (!container || rowKeys.length === 0) return;
     const getColLabel = colLabelFn || ((c) => c);
 
-    // Filter to rows with data
-    const validRows = rowKeys.filter(r => {
+    // All rows with data
+    const allValidRows = rowKeys.filter(r => {
         if (chartType === 'pie') {
             return cols.some(c => (dataMap[r]?.[c] || 0) > 0);
         } else {
             return empGroupLabels.some(eg => cols.some(c => (dataMap[r]?.[eg]?.[c] || 0) > 0));
         }
     });
+
+    rebuildSubChartFilter(allValidRows, rowLabel);
+
+    // Apply sub-chart filter
+    const validRows = selectedSubCharts.size > 0
+        ? allValidRows.filter(r => selectedSubCharts.has(String(r)))
+        : allValidRows;
 
     const BATCH = 4;
     let shown = 0;
@@ -1709,6 +1762,7 @@ function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, 
             const label = rowLabel(r);
             const card = document.createElement('div');
             card.className = 'sub-chart-card';
+            card.dataset.rowKey = String(r);
             card.innerHTML = `<h4>${esc(label)}</h4><canvas></canvas>`;
             // Insert before the "show more" button if it exists
             const moreBtn = container.querySelector('.show-more-btn');
@@ -2202,3 +2256,73 @@ function escData(str) {
         el.textContent = '—';
     }
 })();
+
+// ============================================================
+// Tom Select initialization
+// ============================================================
+function initTomSelects() {
+    caseFilterTS = new TomSelect('#case-filter-select', {
+        plugins: ['remove_button'],
+        maxOptions: null,
+        onChange: function() {
+            selectedCaseGroups = new Set(this.getValue());
+            debouncedRenderPivot();
+        }
+    });
+    empFilterTS = new TomSelect('#employee-filter-select', {
+        plugins: ['remove_button'],
+        maxOptions: null,
+        onChange: function() {
+            selectedEmployees = new Set(this.getValue());
+            debouncedRenderPivot();
+        }
+    });
+    subChartFilterTS = new TomSelect('#sub-chart-filter-select', {
+        plugins: ['remove_button'],
+        maxOptions: null,
+        onChange: function() {
+            selectedSubCharts = new Set(this.getValue());
+            reRenderSubCharts();
+        }
+    });
+}
+initTomSelects();
+
+// Case filter select-all / clear-all
+$('#case-select-all').addEventListener('click', () => {
+    const allValues = Object.keys(caseFilterTS.options);
+    selectedCaseGroups = new Set(allValues);
+    caseFilterTS.setValue(allValues, true);
+    debouncedRenderPivot();
+});
+$('#case-clear-all').addEventListener('click', () => {
+    selectedCaseGroups = new Set();
+    caseFilterTS.setValue([], true);
+    debouncedRenderPivot();
+});
+
+// Employee filter select-all / clear-all
+$('#emp-select-all').addEventListener('click', () => {
+    const allValues = Object.keys(empFilterTS.options);
+    selectedEmployees = new Set(allValues);
+    empFilterTS.setValue(allValues, true);
+    debouncedRenderPivot();
+});
+$('#emp-clear-all').addEventListener('click', () => {
+    selectedEmployees = new Set();
+    empFilterTS.setValue([], true);
+    debouncedRenderPivot();
+});
+
+// Sub-chart filter select-all / clear-all
+$('#sub-chart-select-all').addEventListener('click', () => {
+    const allValues = Object.keys(subChartFilterTS.options);
+    selectedSubCharts = new Set(allValues);
+    subChartFilterTS.setValue(allValues, true);
+    reRenderSubCharts();
+});
+$('#sub-chart-clear-all').addEventListener('click', () => {
+    selectedSubCharts = new Set();
+    subChartFilterTS.setValue([], true);
+    reRenderSubCharts();
+});

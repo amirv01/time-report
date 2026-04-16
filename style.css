@@ -240,34 +240,102 @@ main {
     opacity: 0.4;
 }
 
-/* Checkbox list for case filter */
-.checkbox-list {
+/* Tom Select filter actions */
+.ts-actions {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem 0.8rem;
-    max-height: 120px;
-    overflow-y: auto;
-    padding: 0.4rem;
-    border: 1px solid var(--gray-200);
+    gap: 0.4rem;
+    margin-top: 0.3rem;
+}
+
+/* Sub-chart filter area */
+.sub-chart-filter-area {
+    margin: 1rem 0 0.5rem;
+    padding: 0.6rem 1rem;
+    border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--gray-50);
-}
-
-.checkbox-list label {
     display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    font-size: 0.78rem;
-    font-weight: 400;
-    color: var(--text);
-    white-space: nowrap;
-    cursor: pointer;
+    flex-direction: column;
+    gap: 0.4rem;
 }
 
-.checkbox-list input[type="checkbox"] {
-    accent-color: var(--navy);
-    width: 0.85rem;
-    height: 0.85rem;
+.sub-chart-filter-area > label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--navy);
+}
+
+/* Tom Select overrides to match design */
+.ts-wrapper {
+    font-family: var(--font-body) !important;
+    font-size: 0.82rem;
+}
+
+.ts-control {
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius) !important;
+    background: var(--white) !important;
+    min-height: 32px;
+    padding: 3px 6px !important;
+    cursor: text;
+}
+
+.ts-control.focus {
+    border-color: var(--gold) !important;
+    box-shadow: 0 0 0 2px rgba(184, 150, 78, 0.15) !important;
+    outline: none !important;
+}
+
+.ts-control .item {
+    background: var(--navy) !important;
+    color: var(--white) !important;
+    border-radius: 3px !important;
+    padding: 1px 5px !important;
+    font-size: 0.78rem;
+    border: none !important;
+}
+
+.ts-control .item .remove {
+    color: rgba(255,255,255,0.75) !important;
+    font-size: 0.75rem;
+}
+
+.ts-control .item .remove:hover {
+    color: var(--white) !important;
+}
+
+.ts-wrapper.rtl .ts-control,
+[dir="rtl"] .ts-control {
+    padding-left: 30px !important;
+    padding-right: 6px !important;
+}
+
+.ts-dropdown {
+    border: 1px solid var(--border) !important;
+    border-radius: 0 0 var(--radius) var(--radius) !important;
+    box-shadow: var(--shadow-lg) !important;
+    font-family: var(--font-body) !important;
+    font-size: 0.82rem;
+    z-index: 100;
+}
+
+.ts-dropdown .option {
+    padding: 5px 10px;
+    color: var(--text);
+}
+
+.ts-dropdown .option:hover,
+.ts-dropdown .option.active {
+    background: rgba(184, 150, 78, 0.12) !important;
+    color: var(--navy) !important;
+}
+
+.ts-dropdown .option.selected {
+    background: var(--gray-100) !important;
+}
+
+.ts-dropdown-content {
+    max-height: 200px;
 }
 
 .date-range {
