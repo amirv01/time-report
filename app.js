@@ -15,6 +15,7 @@ let caseGroupMode = 'groups';       // 'none' | 'client' | 'groups'
 let selectedCaseGroups = new Set(); // which case groups/clients to show in pivot
 let subChartMode = null;            // 'case' | 'casegroup' | 'client' — null = use smart default
 let subChartModeManual = false;     // true once user clicks the sub-chart toggle
+let chartDistMode = 'employees';    // 'employees' | 'cases' — pie chart distribution mode
 let pivotChart = null;              // Chart.js instance
 let totalsChart = null;             // Totals bar chart instance
 let subCharts = [];                 // Sub chart instances
@@ -970,6 +971,16 @@ $('#sub-chart-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
     });
 });
 
+// Chart distribution mode toggle (employees vs cases)
+$('#chart-dist-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        $('#chart-dist-mode-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        chartDistMode = btn.dataset.value;
+        debouncedRenderPivot();
+    });
+});
+
 // Date controls
 $('#date-from').addEventListener('change', () => { renderCleanTable(); debouncedRenderPivot(); });
 $('#date-to').addEventListener('change', () => { renderCleanTable(); debouncedRenderPivot(); });
@@ -1399,95 +1410,142 @@ function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGrou
     $('#sub-charts-area').innerHTML = '';
     $('#totals-chart-area').classList.add('hidden');
 
-    // Build consistent color map for columns
+    // Build consistent color map for columns (employees)
     const colColorMap = {};
     cols.forEach((c, i) => { colColorMap[c] = CHART_COLORS[i % CHART_COLORS.length]; });
 
-    // Show/hide sub-chart mode toggle
+    // Build consistent color map for rows (cases/case groups)
+    const rowColorMap = {};
+    rowKeys.forEach((r, i) => { rowColorMap[r] = CASE_COLORS[i % CASE_COLORS.length]; });
+
+    // Show/hide toggles
     const subChartModeArea = $('#sub-chart-mode-area');
+    const chartDistModeArea = $('#chart-dist-mode-area');
 
     if (colMode === 'employees') {
-        // --- Smart default for sub-chart mode ---
-        const clients = getAllClients();
-        const hasCaseGroups = Object.keys(caseGroups).length > 0;
-        if (!subChartModeManual) {
-            if (clients.length > 1) subChartMode = 'client';
-            else if (hasCaseGroups) subChartMode = 'casegroup';
-            else subChartMode = 'case';
-        }
-        // Update toggle button active state
-        if (subChartModeArea) {
-            subChartModeArea.classList.remove('hidden');
-            // Enable/disable casegroup button
-            const cgBtn = subChartModeArea.querySelector('[data-value="casegroup"]');
-            if (cgBtn) {
-                cgBtn.disabled = !hasCaseGroups;
-                cgBtn.style.opacity = hasCaseGroups ? '' : '0.4';
-            }
-            subChartModeArea.querySelectorAll('.toggle-btn').forEach(b => {
-                b.classList.toggle('active', b.dataset.value === subChartMode);
+        // Show chart distribution toggle
+        if (chartDistModeArea) {
+            chartDistModeArea.classList.remove('hidden');
+            chartDistModeArea.querySelectorAll('.toggle-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.value === chartDistMode);
             });
         }
 
-        // Include ALL employees in every pie chart (zeros hidden by legend filter)
-        const allLabels = cols;
-        const allColors = cols.map(c => colColorMap[c]);
-        const mainData = cols.map(c => colTotals[c] || 0);
-
-        pivotChart = new Chart(canvas, {
-            type: 'pie',
-            data: {
-                labels: allLabels,
-                datasets: [{ data: mainData, backgroundColor: allColors, borderColor: '#fff', borderWidth: 1.5 }]
-            },
-            options: pieOptions('right', 12)
-        });
-
-        // --- Build sub-chart data based on subChartMode ---
         const entries = getFilteredEntries();
         const hourKey = valueMode === 'billable' ? 'billableHours' : 'workHours';
-        let subRowKeys, subGetRow, subRowLabel, subPivotData;
+        const clients = getAllClients();
+        const hasCaseGroups = Object.keys(caseGroups).length > 0;
 
-        if (subChartMode === 'client') {
-            subRowKeys = clients;
-            subGetRow = (e) => e.client || 'ללא לקוח';
-            subRowLabel = (r) => r;
-        } else if (subChartMode === 'casegroup' && hasCaseGroups) {
-            const caseGroupMap = {};
-            Object.entries(caseGroups).forEach(([gName, members]) => {
-                members.forEach(m => { caseGroupMap[m] = gName; });
+        if (chartDistMode === 'cases') {
+            // ============ Cases distribution mode ============
+            // Hide sub-chart mode toggle (not relevant here)
+            if (subChartModeArea) subChartModeArea.classList.add('hidden');
+
+            // Main pie: share of each case/case group (matches pivot rows)
+            const rowTotals = {};
+            rowKeys.forEach(r => {
+                rowTotals[r] = cols.reduce((sum, c) => sum + (pivotData[r]?.[c] || 0), 0);
             });
-            const rowSet = new Set();
-            getAllCases().forEach(c => {
-                if (caseGroupMap[c.key]) rowSet.add(caseGroupMap[c.key]);
-                else rowSet.add('אחר');
+            const mainLabels = rowKeys.map(r => rowLabel(r));
+            const mainData = rowKeys.map(r => rowTotals[r] || 0);
+            const mainColors = rowKeys.map(r => rowColorMap[r]);
+
+            pivotChart = new Chart(canvas, {
+                type: 'pie',
+                data: {
+                    labels: mainLabels,
+                    datasets: [{ data: mainData, backgroundColor: mainColors, borderColor: '#fff', borderWidth: 1.5 }]
+                },
+                options: pieOptions('right', 12)
             });
-            subRowKeys = [...rowSet].sort();
-            subGetRow = (e) => caseGroupMap[e.caseKey] || 'אחר';
-            subRowLabel = (r) => r;
+
+            // Sub pies: one per column (employee/employee group), slices = cases/case groups
+            const subPivotData = {};
+            cols.forEach(c => {
+                subPivotData[c] = {};
+                rowKeys.forEach(r => {
+                    subPivotData[c][r] = pivotData[r]?.[c] || 0;
+                });
+            });
+
+            // Render sub charts with row colors for consistency
+            renderSubCharts(rowKeys, cols, (c) => c, subPivotData, rowColorMap, 'pie', null, (r) => rowLabel(r));
         } else {
-            // by individual case
-            const allCases = getAllCases();
-            subRowKeys = allCases.map(c => c.key);
-            subGetRow = (e) => e.caseKey;
-            subRowLabel = (r) => caseLabel(r);
+            // ============ Employees distribution mode (original) ============
+            if (!subChartModeManual) {
+                if (clients.length > 1) subChartMode = 'client';
+                else if (hasCaseGroups) subChartMode = 'casegroup';
+                else subChartMode = 'case';
+            }
+            if (subChartModeArea) {
+                subChartModeArea.classList.remove('hidden');
+                const cgBtn = subChartModeArea.querySelector('[data-value="casegroup"]');
+                if (cgBtn) {
+                    cgBtn.disabled = !hasCaseGroups;
+                    cgBtn.style.opacity = hasCaseGroups ? '' : '0.4';
+                }
+                subChartModeArea.querySelectorAll('.toggle-btn').forEach(b => {
+                    b.classList.toggle('active', b.dataset.value === subChartMode);
+                });
+            }
+
+            // Main pie: share of each employee
+            const allLabels = cols;
+            const allColors = cols.map(c => colColorMap[c]);
+            const mainData = cols.map(c => colTotals[c] || 0);
+
+            pivotChart = new Chart(canvas, {
+                type: 'pie',
+                data: {
+                    labels: allLabels,
+                    datasets: [{ data: mainData, backgroundColor: allColors, borderColor: '#fff', borderWidth: 1.5 }]
+                },
+                options: pieOptions('right', 12)
+            });
+
+            // Build sub-chart data based on subChartMode
+            let subRowKeys, subGetRow, subRowLabel2, subPivotData;
+
+            if (subChartMode === 'client') {
+                subRowKeys = clients;
+                subGetRow = (e) => e.client || 'ללא לקוח';
+                subRowLabel2 = (r) => r;
+            } else if (subChartMode === 'casegroup' && hasCaseGroups) {
+                const caseGroupMap = {};
+                Object.entries(caseGroups).forEach(([gName, members]) => {
+                    members.forEach(m => { caseGroupMap[m] = gName; });
+                });
+                const rowSet = new Set();
+                getAllCases().forEach(c => {
+                    if (caseGroupMap[c.key]) rowSet.add(caseGroupMap[c.key]);
+                    else rowSet.add('אחר');
+                });
+                subRowKeys = [...rowSet].sort();
+                subGetRow = (e) => caseGroupMap[e.caseKey] || 'אחר';
+                subRowLabel2 = (r) => r;
+            } else {
+                const allCases = getAllCases();
+                subRowKeys = allCases.map(c => c.key);
+                subGetRow = (e) => e.caseKey;
+                subRowLabel2 = (r) => caseLabel(r);
+            }
+
+            subPivotData = {};
+            subRowKeys.forEach(r => { subPivotData[r] = {}; });
+            entries.forEach(e => {
+                const row = subGetRow(e);
+                if (!subPivotData[row]) return;
+                const col = getCol(e);
+                const val = e[hourKey];
+                subPivotData[row][col] = (subPivotData[row][col] || 0) + val;
+            });
+
+            renderSubCharts(cols, subRowKeys, subRowLabel2, subPivotData, colColorMap, 'pie');
         }
-
-        // Build sub pivot data: { rowKey: { col: hours } }
-        subPivotData = {};
-        subRowKeys.forEach(r => { subPivotData[r] = {}; });
-        entries.forEach(e => {
-            const row = subGetRow(e);
-            if (!subPivotData[row]) return;
-            const col = getCol(e);
-            const val = e[hourKey];
-            subPivotData[row][col] = (subPivotData[row][col] || 0) + val;
-        });
-
-        renderSubCharts(cols, subRowKeys, subRowLabel, subPivotData, colColorMap, 'pie');
     } else {
-        // Hide sub-chart mode toggle in months mode
+        // Hide toggles in months mode
         if (subChartModeArea) subChartModeArea.classList.add('hidden');
+        if (chartDistModeArea) chartDistModeArea.classList.add('hidden');
 
         // Main bar chart (uses CASE_COLORS to distinguish from employee-group charts below)
         const datasets = rowKeys.map((r, i) => {
@@ -1628,9 +1686,10 @@ function barOptions(stacked) {
     };
 }
 
-function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, empGroupLabels) {
+function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, empGroupLabels, colLabelFn) {
     const container = $('#sub-charts-area');
     if (!container || rowKeys.length === 0) return;
+    const getColLabel = colLabelFn || ((c) => c);
 
     // Filter to rows with data
     const validRows = rowKeys.filter(r => {
@@ -1662,10 +1721,11 @@ function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, 
                 // Include ALL cols so colors stay consistent; zeros hidden by legend filter
                 const data = cols.map(c => dataMap[r]?.[c] || 0);
                 const colors = cols.map(c => colorMap[c]);
+                const labels = cols.map(c => getColLabel(c));
                 const chart = new Chart(subCanvas, {
                     type: 'pie',
                     data: {
-                        labels: cols,
+                        labels: labels,
                         datasets: [{ data: data, backgroundColor: colors, borderColor: '#fff', borderWidth: 1 }]
                     },
                     options: pieOptions('bottom', 10)
