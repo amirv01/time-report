@@ -16,7 +16,11 @@ let selectedCaseGroups = new Set(); // which case groups/clients to show in pivo
 let subChartMode = null;            // 'case' | 'casegroup' | 'client' — null = use smart default
 let subChartModeManual = false;     // true once user clicks the sub-chart toggle
 let chartDistMode = 'employees';    // 'employees' | 'cases' — pie chart distribution mode
-let selectedEmployees = new Set();  // empty = all selected (no filter)
+let sortCol = null;                 // null = default order, '__total__' = sort by row total, else col key
+let sortDir = 'desc';              // 'asc' | 'desc'
+let selectedEmployees = new Set();       // individual employee filter
+let selectedEmployeeGroups = new Set();  // employee group filter (when groupEmployees=true)
+let caseFilterMode = 'case';             // 'case'|'client'|'groups' — filter mode when caseGroupMode='none'
 let selectedSubCharts = new Set();  // empty = all sub-charts shown
 let _lastSubChartArgs = null;       // cached for re-render from sub-chart filter
 let _caseFilterAllItems = [];      // current item list for case filter
@@ -717,20 +721,45 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
 function rebuildCaseFilter() {
     const filterGroup = $('#case-filter-group');
     const filterLabel = $('#case-filter-label');
+    const modeToggle = $('#case-filter-mode-toggle');
 
-    if (caseGroupMode === 'none') {
-        if (filterGroup) filterGroup.style.display = 'none';
-        return;
-    }
     if (filterGroup) filterGroup.style.display = '';
 
-    let items;
-    if (caseGroupMode === 'client') {
-        items = getAllClients();
-        if (filterLabel) filterLabel.textContent = 'לקוחות להצגה:';
+    let items, labelFn = null;
+
+    if (caseGroupMode === 'none') {
+        // Show the sub-mode toggle
+        if (modeToggle) {
+            modeToggle.classList.remove('hidden');
+            modeToggle.querySelectorAll('.toggle-btn').forEach(b => b.classList.toggle('active', b.dataset.value === caseFilterMode));
+            // Disable 'groups' button if no case groups defined
+            const groupsBtn = modeToggle.querySelector('[data-value="groups"]');
+            if (groupsBtn) {
+                const hasGroups = Object.keys(caseGroups).length > 0;
+                groupsBtn.disabled = !hasGroups;
+                groupsBtn.style.opacity = hasGroups ? '' : '0.4';
+            }
+        }
+        if (caseFilterMode === 'case') {
+            items = getAllCases().map(c => c.key);
+            labelFn = (k) => esc(caseLabel(k));
+            if (filterLabel) filterLabel.textContent = 'תיקים להצגה:';
+        } else if (caseFilterMode === 'client') {
+            items = getAllClients();
+            if (filterLabel) filterLabel.textContent = 'לקוחות להצגה:';
+        } else { // 'groups'
+            items = [...Object.keys(caseGroups), 'אחר'];
+            if (filterLabel) filterLabel.textContent = 'קבוצות תיקים להצגה:';
+        }
     } else {
-        items = [...Object.keys(caseGroups), 'אחר'];
-        if (filterLabel) filterLabel.textContent = 'קבוצות תיקים להצגה:';
+        if (modeToggle) modeToggle.classList.add('hidden');
+        if (caseGroupMode === 'client') {
+            items = getAllClients();
+            if (filterLabel) filterLabel.textContent = 'לקוחות להצגה:';
+        } else {
+            items = [...Object.keys(caseGroups), 'אחר'];
+            if (filterLabel) filterLabel.textContent = 'קבוצות תיקים להצגה:';
+        }
     }
 
     _caseFilterAllItems = items;
@@ -738,15 +767,16 @@ function rebuildCaseFilter() {
     selectedCaseGroups = new Set([...selectedCaseGroups].filter(i => validSet.has(i)));
     if (selectedCaseGroups.size === 0) items.forEach(i => selectedCaseGroups.add(i));
 
-    renderCaseFilterList(items, '');
+    renderCaseFilterList(items, '', labelFn);
     updateCaseFilterTrigger(items);
 }
 
-function renderCaseFilterList(allItems, searchTerm) {
+function renderCaseFilterList(allItems, searchTerm, labelFn = null) {
     const list = $('#case-filter-list');
     if (!list) return;
     const term = searchTerm.toLowerCase();
-    const filtered = term ? allItems.filter(i => i.toLowerCase().includes(term)) : allItems;
+    const displayLabel = labelFn || ((i) => esc(i));
+    const filtered = term ? allItems.filter(i => displayLabel(i).toLowerCase().includes(term)) : allItems;
 
     const allChecked = allItems.length > 0 && allItems.every(i => selectedCaseGroups.has(i));
     const someChecked = !allChecked && allItems.some(i => selectedCaseGroups.has(i));
@@ -762,7 +792,7 @@ function renderCaseFilterList(allItems, searchTerm) {
     allCb.addEventListener('change', () => {
         if (allCb.checked) allItems.forEach(i => selectedCaseGroups.add(i));
         else allItems.forEach(i => selectedCaseGroups.delete(i));
-        renderCaseFilterList(allItems, $('#case-filter-search').value);
+        renderCaseFilterList(allItems, $('#case-filter-search').value, labelFn);
         updateCaseFilterTrigger(allItems);
         debouncedRenderPivot();
     });
@@ -771,13 +801,13 @@ function renderCaseFilterList(allItems, searchTerm) {
     filtered.forEach(item => {
         const li = document.createElement('li');
         li.className = 'xf-item';
-        li.innerHTML = `<label><input type="checkbox" /><span>${esc(item)}</span></label>`;
+        li.innerHTML = `<label><input type="checkbox" /><span>${displayLabel(item)}</span></label>`;
         const cb = li.querySelector('input');
         cb.checked = selectedCaseGroups.has(item);
         cb.addEventListener('change', () => {
             if (cb.checked) selectedCaseGroups.add(item);
             else selectedCaseGroups.delete(item);
-            renderCaseFilterList(allItems, $('#case-filter-search').value);
+            renderCaseFilterList(allItems, $('#case-filter-search').value, labelFn);
             updateCaseFilterTrigger(allItems);
             debouncedRenderPivot();
         });
@@ -793,32 +823,48 @@ function updateCaseFilterTrigger(allItems) {
 }
 
 function rebuildEmployeeFilter() {
-    const allEmps = getAllEmployees();
-    if (allEmps.length === 0) return;
+    const filterLabel = $('#employee-filter-group label');
+    if (groupEmployees && Object.keys(employeeGroups).length > 0) {
+        // Build group list
+        const allGroups = [...Object.keys(employeeGroups)];
+        const groupedSet = new Set(Object.values(employeeGroups).flat());
+        const hasUngrouped = getAllEmployees().some(e => !groupedSet.has(e));
+        if (hasUngrouped) allGroups.push('אחר');
+        if (allGroups.length === 0) return;
 
-    const validEmpSet = new Set(allEmps);
-    selectedEmployees = new Set([...selectedEmployees].filter(e => validEmpSet.has(e)));
-    if (selectedEmployees.size === 0) {
-        allEmps.forEach(e => selectedEmployees.add(e));
+        const validSet = new Set(allGroups);
+        selectedEmployeeGroups = new Set([...selectedEmployeeGroups].filter(g => validSet.has(g)));
+        if (selectedEmployeeGroups.size === 0) allGroups.forEach(g => selectedEmployeeGroups.add(g));
+
+        if (filterLabel) filterLabel.textContent = 'קבוצות עובדים להצגה:';
+        renderEmpFilterList(allGroups, '', selectedEmployeeGroups);
+        updateEmpFilterTrigger(allGroups, selectedEmployeeGroups);
+    } else {
+        const allEmps = getAllEmployees();
+        if (allEmps.length === 0) return;
+
+        const validEmpSet = new Set(allEmps);
+        selectedEmployees = new Set([...selectedEmployees].filter(e => validEmpSet.has(e)));
+        if (selectedEmployees.size === 0) allEmps.forEach(e => selectedEmployees.add(e));
+
+        if (filterLabel) filterLabel.textContent = 'עובדים להצגה:';
+        renderEmpFilterList(allEmps, '', selectedEmployees);
+        updateEmpFilterTrigger(allEmps, selectedEmployees);
     }
-
-    renderEmpFilterList(allEmps, '');
-    updateEmpFilterTrigger(allEmps);
 }
 
-function renderEmpFilterList(allEmps, searchTerm) {
+function renderEmpFilterList(allItems, searchTerm, selectedSet) {
     const list = $('#emp-filter-list');
     if (!list) return;
     const term = searchTerm.toLowerCase();
-    const filtered = term ? allEmps.filter(e => e.toLowerCase().includes(term)) : allEmps;
+    const filtered = term ? allItems.filter(e => e.toLowerCase().includes(term)) : allItems;
 
-    // "Select all" state reflects ALL employees, not just filtered
-    const allChecked = allEmps.length > 0 && allEmps.every(e => selectedEmployees.has(e));
-    const someChecked = !allChecked && allEmps.some(e => selectedEmployees.has(e));
+    // "Select all" state reflects ALL items, not just filtered
+    const allChecked = allItems.length > 0 && allItems.every(e => selectedSet.has(e));
+    const someChecked = !allChecked && allItems.some(e => selectedSet.has(e));
 
     list.innerHTML = '';
 
-    // "Select all" row — clicking selects/deselects ALL employees
     const allLi = document.createElement('li');
     allLi.className = 'xf-item xf-select-all';
     allLi.innerHTML = `<label><input type="checkbox" /><span>בחר הכל</span></label>`;
@@ -826,38 +872,37 @@ function renderEmpFilterList(allEmps, searchTerm) {
     allCb.checked = allChecked;
     allCb.indeterminate = someChecked;
     allCb.addEventListener('change', () => {
-        if (allCb.checked) allEmps.forEach(e => selectedEmployees.add(e));
-        else allEmps.forEach(e => selectedEmployees.delete(e));
-        renderEmpFilterList(allEmps, $('#emp-filter-search').value);
-        updateEmpFilterTrigger(allEmps);
+        if (allCb.checked) allItems.forEach(e => selectedSet.add(e));
+        else allItems.forEach(e => selectedSet.delete(e));
+        renderEmpFilterList(allItems, $('#emp-filter-search').value, selectedSet);
+        updateEmpFilterTrigger(allItems, selectedSet);
         debouncedRenderPivot();
     });
     list.appendChild(allLi);
 
-    // Individual rows
-    filtered.forEach(emp => {
+    filtered.forEach(item => {
         const li = document.createElement('li');
         li.className = 'xf-item';
-        li.innerHTML = `<label><input type="checkbox" /><span>${esc(emp)}</span></label>`;
+        li.innerHTML = `<label><input type="checkbox" /><span>${esc(item)}</span></label>`;
         const cb = li.querySelector('input');
-        cb.value = emp;
-        cb.checked = selectedEmployees.has(emp);
+        cb.value = item;
+        cb.checked = selectedSet.has(item);
         cb.addEventListener('change', () => {
-            if (cb.checked) selectedEmployees.add(emp);
-            else selectedEmployees.delete(emp);
-            renderEmpFilterList(allEmps, $('#emp-filter-search').value);
-            updateEmpFilterTrigger(allEmps);
+            if (cb.checked) selectedSet.add(item);
+            else selectedSet.delete(item);
+            renderEmpFilterList(allItems, $('#emp-filter-search').value, selectedSet);
+            updateEmpFilterTrigger(allItems, selectedSet);
             debouncedRenderPivot();
         });
         list.appendChild(li);
     });
 }
 
-function updateEmpFilterTrigger(allEmps) {
+function updateEmpFilterTrigger(allItems, selectedSet) {
     const trigger = $('#emp-filter-trigger');
     if (!trigger) return;
-    const selected = allEmps.filter(e => selectedEmployees.has(e)).length;
-    trigger.textContent = selected === allEmps.length ? 'הכל ▾' : `${selected} מתוך ${allEmps.length} ▾`;
+    const selected = allItems.filter(e => selectedSet.has(e)).length;
+    trigger.textContent = selected === allItems.length ? 'הכל ▾' : `${selected} מתוך ${allItems.length} ▾`;
 }
 
 // ============================================================
@@ -938,7 +983,16 @@ function getFilteredEntries() {
         const td = new Date(to + 'T23:59:59');
         if (!isNaN(td.getTime())) entries = entries.filter(e => e.date <= td);
     }
-    entries = entries.filter(e => selectedEmployees.has(e.employee));
+    if (groupEmployees && Object.keys(employeeGroups).length > 0) {
+        const empGroupMap = {};
+        Object.entries(employeeGroups).forEach(([g, members]) => members.forEach(m => { empGroupMap[m] = g; }));
+        entries = entries.filter(e => {
+            const group = empGroupMap[e.employee] || (ungroupedMode === 'individual' ? e.employee : 'אחר');
+            return selectedEmployeeGroups.has(group);
+        });
+    } else {
+        entries = entries.filter(e => selectedEmployees.has(e.employee));
+    }
     return entries;
 }
 
@@ -993,6 +1047,24 @@ function caseLabel(key) {
 
 
 // ============================================================
+// Pivot table sort — delegated, one-time
+(function initPivotSort() {
+    const table = $('#pivot-table');
+    if (!table) return;
+    table.addEventListener('click', (e) => {
+        const th = e.target.closest('th.pivot-sortable');
+        if (!th) return;
+        const col = th.dataset.col;
+        if (sortCol === col) {
+            sortDir = sortDir === 'desc' ? 'asc' : 'desc';
+        } else {
+            sortCol = col;
+            sortDir = 'desc';
+        }
+        debouncedRenderPivot();
+    });
+})();
+
 // Debounced render for performance on rapid control changes
 // ============================================================
 let _renderPivotTimer;
@@ -1028,6 +1100,19 @@ $('#value-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
     });
 });
 
+// Case filter mode toggle (only shown when caseGroupMode === 'none')
+$('#case-filter-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        if (btn.disabled) return;
+        $('#case-filter-mode-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        caseFilterMode = btn.dataset.value;
+        selectedCaseGroups.clear(); // reset selection for new filter type
+        rebuildCaseFilter();
+        debouncedRenderPivot();
+    });
+});
+
 // Ungrouped toggle
 $('#ungrouped-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1058,6 +1143,7 @@ $('#col-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
 // Group employees checkbox
 $('#group-employees-cb').addEventListener('change', (e) => {
     groupEmployees = e.target.checked;
+    rebuildEmployeeFilter();
     debouncedRenderPivot();
 });
 
@@ -1070,6 +1156,7 @@ $('#case-group-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
         // Show/hide ungrouped toggle — only relevant in 'groups' mode
         const ungroupedToggle = $('#ungrouped-toggle').closest('.control-group');
         if (ungroupedToggle) ungroupedToggle.style.display = caseGroupMode === 'groups' ? '' : 'none';
+        if (caseGroupMode === 'none') caseFilterMode = 'case'; // reset sub-filter mode
         selectedCaseGroups.clear(); // reset filter for new mode
         rebuildCaseFilter();
         debouncedRenderPivot();
@@ -1398,9 +1485,21 @@ function renderPivot() {
             return caseLabel(r);
         };
     } else {
-        // No grouping — individual cases
+        // No grouping — individual cases, filtered by caseFilterMode
         const allCases = getAllCases();
-        rowKeys = allCases.map(c => c.key);
+        let filteredKeys;
+        if (caseFilterMode === 'case') {
+            filteredKeys = allCases.map(c => c.key).filter(k => selectedCaseGroups.has(k));
+        } else if (caseFilterMode === 'client') {
+            const caseClientMap = {};
+            allCases.forEach(c => { caseClientMap[c.key] = c.client; });
+            filteredKeys = allCases.map(c => c.key).filter(k => selectedCaseGroups.has(caseClientMap[k]));
+        } else { // 'groups'
+            const cgMap = {};
+            Object.entries(caseGroups).forEach(([g, members]) => members.forEach(m => { cgMap[m] = g; }));
+            filteredKeys = allCases.map(c => c.key).filter(k => selectedCaseGroups.has(cgMap[k] || 'אחר'));
+        }
+        rowKeys = filteredKeys;
         getRow = (e) => e.caseKey;
         rowLabel = (r) => caseLabel(r);
     }
@@ -1467,10 +1566,30 @@ function renderPivot() {
     const thead = $('#pivot-table thead');
     const tbody = $('#pivot-table tbody');
 
+    // --- Sort rowKeys ---
+    if (sortCol !== null) {
+        rowKeys.sort((a, b) => {
+            let va, vb;
+            if (sortCol === '__total__') {
+                va = rowTotals[a] || 0;
+                vb = rowTotals[b] || 0;
+            } else {
+                va = pivotData[a]?.[sortCol] || 0;
+                vb = pivotData[b]?.[sortCol] || 0;
+            }
+            return sortDir === 'desc' ? vb - va : va - vb;
+        });
+    }
+
+    const sortIndicator = (key) => {
+        if (sortCol === key) return sortDir === 'desc' ? ' ▼' : ' ▲';
+        return '<span class="sort-idle">⇅</span>';
+    };
+
     thead.innerHTML = `<tr>
         <th class="pivot-corner">${cornerLabel}</th>
-        ${cols.map(c => `<th>${esc(c)}</th>`).join('')}
-        <th class="pivot-total-header">סה"כ</th>
+        ${cols.map(c => `<th class="pivot-sortable" data-col="${escData(c)}">${esc(c)}${sortIndicator(c)}</th>`).join('')}
+        <th class="pivot-sortable pivot-total-header" data-col="__total__">סה"כ${sortIndicator('__total__')}</th>
     </tr>`;
 
     const tbodyParts = [];
@@ -1525,6 +1644,10 @@ function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGrou
     subCharts = [];
     $('#sub-charts-area').innerHTML = '';
     $('#totals-chart-area').classList.add('hidden');
+    // Reset main canvas visibility (may have been hidden by fallback table)
+    canvas.style.display = '';
+    // Remove any previous fallback tables from chart area
+    canvas.parentElement.querySelectorAll('.pie-fallback-table, .pie-others-expand').forEach(el => el.remove());
 
     // Build consistent color map for columns (employees)
     const colColorMap = {};
@@ -1566,14 +1689,7 @@ function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGrou
             const mainData = rowKeys.map(r => rowTotals[r] || 0);
             const mainColors = rowKeys.map(r => rowColorMap[r]);
 
-            pivotChart = new Chart(canvas, {
-                type: 'pie',
-                data: {
-                    labels: mainLabels,
-                    datasets: [{ data: mainData, backgroundColor: mainColors, borderColor: '#fff', borderWidth: 1.5 }]
-                },
-                options: pieOptions('right', 12)
-            });
+            pivotChart = renderSmartPie(canvas, mainLabels, mainData, mainColors, 'right', 12, canvas.parentElement);
 
             // Sub pies: one per column (employee/employee group), slices = cases/case groups
             const subPivotData = {};
@@ -1610,14 +1726,7 @@ function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGrou
             const allColors = cols.map(c => colColorMap[c]);
             const mainData = cols.map(c => colTotals[c] || 0);
 
-            pivotChart = new Chart(canvas, {
-                type: 'pie',
-                data: {
-                    labels: allLabels,
-                    datasets: [{ data: mainData, backgroundColor: allColors, borderColor: '#fff', borderWidth: 1.5 }]
-                },
-                options: pieOptions('right', 12)
-            });
+            pivotChart = renderSmartPie(canvas, allLabels, mainData, allColors, 'right', 12, canvas.parentElement);
 
             // Build sub-chart data based on subChartMode
             let subRowKeys, subGetRow, subRowLabel2, subPivotData;
@@ -1664,14 +1773,37 @@ function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGrou
         if (chartDistModeArea) chartDistModeArea.classList.add('hidden');
 
         // Main bar chart (uses CASE_COLORS to distinguish from employee-group charts below)
-        const datasets = rowKeys.map((r, i) => {
+        // Apply top-N grouping + smart stacked/grouped threshold
+        const TOP_N = 8;
+        const M = cols.length;
+        let chartRowKeys = rowKeys;
+        let othersDataset = null;
+
+        if (rowKeys.length > TOP_N) {
+            // Rank rows by total hours descending, keep top N
+            const rowTotals = {};
+            rowKeys.forEach(r => { rowTotals[r] = cols.reduce((s, c) => s + (pivotData[r]?.[c] || 0), 0); });
+            const sorted = [...rowKeys].sort((a, b) => (rowTotals[b] || 0) - (rowTotals[a] || 0));
+            chartRowKeys = sorted.slice(0, TOP_N);
+            const othersRows = sorted.slice(TOP_N);
+            // Build "אחרים" dataset
+            const othersData = cols.map(c => othersRows.reduce((s, r) => s + (pivotData[r]?.[c] || 0), 0));
+            othersDataset = { label: 'אחרים', data: othersData, backgroundColor: OTHERS_COLOR, borderColor: OTHERS_COLOR, borderWidth: 1, borderRadius: 2 };
+        }
+
+        const S_eff = chartRowKeys.length + (othersDataset ? 1 : 0);
+        const useStacked = S_eff * M > 72;
+
+        const datasets = chartRowKeys.map((r, i) => {
             const color = CASE_COLORS[i % CASE_COLORS.length];
             return { label: rowLabel(r), data: cols.map(c => pivotData[r]?.[c] || 0), backgroundColor: color, borderColor: color, borderWidth: 1, borderRadius: 2 };
         });
+        if (othersDataset) datasets.push(othersDataset);
+
         pivotChart = new Chart(canvas, {
             type: 'bar',
             data: { labels: cols, datasets },
-            options: barOptions(false)
+            options: barOptions(useStacked)
         });
 
         // Totals stacked bar chart — stacked by employee group across all cases
@@ -1707,6 +1839,97 @@ function renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGrou
         });
         renderSubCharts(cols, rowKeys, rowLabel, subBarData, egColorMap, 'bar', empGroupLabels);
     }
+}
+
+const OTHERS_COLOR = '#9ba3b0';
+
+function renderSmartPie(canvasEl, labels, data, colors, legendPos, fontSize, containerEl) {
+    const total = data.reduce((a, b) => a + b, 0);
+    if (total === 0) return null;
+
+    // Pair up and remove zeros
+    const items = labels.map((l, i) => ({ label: l, value: data[i], color: colors[i] }))
+        .filter(it => it.value > 0)
+        .sort((a, b) => b.value - a.value);
+
+    const hasLarge = items.some(it => (it.value / total) * 100 >= 5);
+
+    if (!hasLarge) {
+        // Scenario 1: all small — draw ranked bar table instead of pie
+        canvasEl.style.display = 'none';
+        const tableDiv = document.createElement('div');
+        tableDiv.className = 'pie-fallback-table';
+        const maxVal = items[0]?.value || 1;
+        tableDiv.innerHTML = items.map(it => {
+            const pct = ((it.value / total) * 100).toFixed(1);
+            const barW = Math.round((it.value / maxVal) * 100);
+            return `<div class="pft-row">
+                <div class="pft-color" style="background:${it.color}"></div>
+                <div class="pft-label">${esc(it.label)}</div>
+                <div class="pft-bar-wrap"><div class="pft-bar" style="width:${barW}%;background:${it.color}"></div></div>
+                <div class="pft-pct">${pct}%</div>
+                <div class="pft-val">${it.value.toFixed(2)}</div>
+            </div>`;
+        }).join('');
+        containerEl.appendChild(tableDiv);
+        return null;
+    }
+
+    // Scenario 2: some items ≥5% — group items <5% into "אחר"
+    const large = items.filter(it => (it.value / total) * 100 >= 5);
+    const small = items.filter(it => (it.value / total) * 100 < 5);
+
+    let chartLabels, chartData, chartColors, smallGroup = null;
+
+    if (small.length > 0) {
+        const othersTotal = small.reduce((s, it) => s + it.value, 0);
+        chartLabels = large.map(it => it.label).concat(['אחרים']);
+        chartData = large.map(it => it.value).concat([othersTotal]);
+        chartColors = large.map(it => it.color).concat([OTHERS_COLOR]);
+        smallGroup = { items: small, total: othersTotal };
+    } else {
+        chartLabels = large.map(it => it.label);
+        chartData = large.map(it => it.value);
+        chartColors = large.map(it => it.color);
+    }
+
+    canvasEl.style.display = '';
+    const chart = new Chart(canvasEl, {
+        type: 'pie',
+        data: {
+            labels: chartLabels,
+            datasets: [{ data: chartData, backgroundColor: chartColors, borderColor: '#fff', borderWidth: 1.5 }]
+        },
+        options: pieOptions(legendPos, fontSize)
+    });
+
+    // Add expandable "אחרים" section if needed
+    if (smallGroup) {
+        const expandDiv = document.createElement('div');
+        expandDiv.className = 'pie-others-expand';
+        const othPct = ((smallGroup.total / total) * 100).toFixed(1);
+        expandDiv.innerHTML = `<button class="pie-others-btn">▶ אחרים (${othPct}%) — לחץ להרחבה</button><div class="pie-others-list hidden"></div>`;
+
+        const btn = expandDiv.querySelector('.pie-others-btn');
+        const listDiv = expandDiv.querySelector('.pie-others-list');
+        const allOthers = smallGroup.items;
+        const showItems = allOthers.slice(0, 15);
+        const overflow = allOthers.length - showItems.length;
+        listDiv.innerHTML = showItems.map(it => {
+            const pct = ((it.value / total) * 100).toFixed(1);
+            return `<div class="poi-row"><span class="poi-dot" style="background:${it.color}"></span><span class="poi-label">${esc(it.label)}</span><span class="poi-pct">${pct}%</span><span class="poi-val">${it.value.toFixed(2)}</span></div>`;
+        }).join('') + (overflow > 0 ? `<div class="poi-overflow">ועוד ${overflow} פריטים נוספים</div>` : '');
+
+        btn.addEventListener('click', () => {
+            const open = !listDiv.classList.contains('hidden');
+            listDiv.classList.toggle('hidden', open);
+            btn.textContent = (open ? '▶' : '▼') + btn.textContent.slice(1);
+        });
+
+        containerEl.appendChild(expandDiv);
+    }
+
+    return chart;
 }
 
 function pieOptions(legendPos, fontSize) {
@@ -1927,19 +2150,11 @@ function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, 
             const subCanvas = card.querySelector('canvas');
 
             if (chartType === 'pie') {
-                // Include ALL cols so colors stay consistent; zeros hidden by legend filter
                 const data = cols.map(c => dataMap[r]?.[c] || 0);
                 const colors = cols.map(c => colorMap[c]);
                 const labels = cols.map(c => getColLabel(c));
-                const chart = new Chart(subCanvas, {
-                    type: 'pie',
-                    data: {
-                        labels: labels,
-                        datasets: [{ data: data, backgroundColor: colors, borderColor: '#fff', borderWidth: 1 }]
-                    },
-                    options: pieOptions('bottom', 10)
-                });
-                subCharts.push(chart);
+                const chart = renderSmartPie(subCanvas, labels, data, colors, 'bottom', 10, card);
+                if (chart) subCharts.push(chart);
             } else {
                 // Stacked bar: months on X, one dataset per employee group
                 const datasets = empGroupLabels.map(eg => ({
