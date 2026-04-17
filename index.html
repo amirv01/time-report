@@ -78,10 +78,12 @@
                     </div>
                     <div class="control-group" id="employee-filter-group">
                         <label>עובדים להצגה:</label>
-                        <select id="employee-filter-select" multiple placeholder="כל העובדים"></select>
-                        <div class="ts-actions">
-                            <button class="btn btn-small" id="emp-select-all">הכל</button>
-                            <button class="btn btn-small" id="emp-clear-all">נקה</button>
+                        <div class="xf-wrapper">
+                            <button class="xf-trigger" id="emp-filter-trigger" type="button">הכל ▾</button>
+                            <div class="xf-dropdown hidden" id="emp-filter-dropdown">
+                                <input class="xf-search" type="text" id="emp-filter-search" placeholder="חפש..." autocomplete="off" />
+                                <ul class="xf-list" id="emp-filter-list"></ul>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -98,10 +100,12 @@
                     </div>
                     <div class="control-group" id="case-filter-group">
                         <label id="case-filter-label">קבוצות תיקים להצגה:</label>
-                        <select id="case-filter-select" multiple placeholder="בחר..."></select>
-                        <div class="ts-actions">
-                            <button class="btn btn-small" id="case-select-all">הכל</button>
-                            <button class="btn btn-small" id="case-clear-all">נקה</button>
+                        <div class="xf-wrapper">
+                            <button class="xf-trigger" id="case-filter-trigger" type="button">הכל ▾</button>
+                            <div class="xf-dropdown hidden" id="case-filter-dropdown">
+                                <input class="xf-search" type="text" id="case-filter-search" placeholder="חפש..." autocomplete="off" />
+                                <ul class="xf-list" id="case-filter-list"></ul>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -157,10 +161,12 @@
             </div>
             <div id="sub-chart-filter-area" class="sub-chart-filter-area hidden">
                 <label>סנן גרפים:</label>
-                <select id="sub-chart-filter-select" multiple placeholder="כל הגרפים"></select>
-                <div class="ts-actions">
-                    <button class="btn btn-small" id="sub-chart-select-all">הכל</button>
-                    <button class="btn btn-small" id="sub-chart-clear-all">נקה</button>
+                <div class="xf-wrapper">
+                    <button class="xf-trigger" id="sub-chart-filter-trigger" type="button">הכל ▾</button>
+                    <div class="xf-dropdown hidden" id="sub-chart-filter-dropdown">
+                        <input class="xf-search" type="text" id="sub-chart-filter-search" placeholder="חפש..." autocomplete="off" />
+                        <ul class="xf-list" id="sub-chart-filter-list"></ul>
+                    </div>
                 </div>
             </div>
             <div id="sub-charts-area" class="sub-charts-grid"></div>

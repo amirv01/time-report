@@ -19,7 +19,12 @@ let chartDistMode = 'employees';    // 'employees' | 'cases' — pie chart distr
 let selectedEmployees = new Set();  // empty = all selected (no filter)
 let selectedSubCharts = new Set();  // empty = all sub-charts shown
 let _lastSubChartArgs = null;       // cached for re-render from sub-chart filter
-let caseFilterTS = null, empFilterTS = null, subChartFilterTS = null;
+let _caseFilterAllItems = [];      // current item list for case filter
+let _subChartFilterAllItems = [];  // current item list for sub-chart filter
+// Derived-data cache — invalidated whenever rawEntries changes
+let _cache = { valid: false, employees: null, cases: null, clients: null, months: null };
+function invalidateCache() { _cache.valid = false; }
+
 let pivotChart = null;              // Chart.js instance
 let totalsChart = null;             // Totals bar chart instance
 let subCharts = [];                 // Sub chart instances
@@ -441,6 +446,9 @@ function parseReport(rows) {
         rawEntries = newEntries;
     }
 
+    // Invalidate derived-data cache since rawEntries changed
+    invalidateCache();
+
     // Update date filters based on all current entries
     updateDateFilters();
     rebuildCaseFilter();
@@ -492,6 +500,7 @@ function appendEntries(newEntries) {
     }
 
     rawEntries = rawEntries.concat(addedEntries);
+    invalidateCache();
     const totalBillable = addedEntries.reduce((s, e) => s + (e.billableHours || 0), 0);
     alert(`${addedEntries.length} רשומות צורפו.\nסה"כ שעות חיוב ברשומות החדשות: ${totalBillable.toFixed(2)}`);
 }
@@ -724,19 +733,66 @@ function rebuildCaseFilter() {
         if (filterLabel) filterLabel.textContent = 'קבוצות תיקים להצגה:';
     }
 
-    if (selectedCaseGroups.size === 0) {
-        items.forEach(item => selectedCaseGroups.add(item));
-    }
+    _caseFilterAllItems = items;
+    const validSet = new Set(items);
+    selectedCaseGroups = new Set([...selectedCaseGroups].filter(i => validSet.has(i)));
+    if (selectedCaseGroups.size === 0) items.forEach(i => selectedCaseGroups.add(i));
 
-    if (!caseFilterTS) return;
-    caseFilterTS.clearOptions();
-    items.forEach(item => caseFilterTS.addOption({ value: item, text: item }));
-    caseFilterTS.refreshOptions(false);
-    caseFilterTS.setValue([...selectedCaseGroups], true);
+    renderCaseFilterList(items, '');
+    updateCaseFilterTrigger(items);
+}
+
+function renderCaseFilterList(allItems, searchTerm) {
+    const list = $('#case-filter-list');
+    if (!list) return;
+    const term = searchTerm.toLowerCase();
+    const filtered = term ? allItems.filter(i => i.toLowerCase().includes(term)) : allItems;
+
+    const allChecked = allItems.length > 0 && allItems.every(i => selectedCaseGroups.has(i));
+    const someChecked = !allChecked && allItems.some(i => selectedCaseGroups.has(i));
+
+    list.innerHTML = '';
+
+    const allLi = document.createElement('li');
+    allLi.className = 'xf-item xf-select-all';
+    allLi.innerHTML = `<label><input type="checkbox" /><span>בחר הכל</span></label>`;
+    const allCb = allLi.querySelector('input');
+    allCb.checked = allChecked;
+    allCb.indeterminate = someChecked;
+    allCb.addEventListener('change', () => {
+        if (allCb.checked) allItems.forEach(i => selectedCaseGroups.add(i));
+        else allItems.forEach(i => selectedCaseGroups.delete(i));
+        renderCaseFilterList(allItems, $('#case-filter-search').value);
+        updateCaseFilterTrigger(allItems);
+        debouncedRenderPivot();
+    });
+    list.appendChild(allLi);
+
+    filtered.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'xf-item';
+        li.innerHTML = `<label><input type="checkbox" /><span>${esc(item)}</span></label>`;
+        const cb = li.querySelector('input');
+        cb.checked = selectedCaseGroups.has(item);
+        cb.addEventListener('change', () => {
+            if (cb.checked) selectedCaseGroups.add(item);
+            else selectedCaseGroups.delete(item);
+            renderCaseFilterList(allItems, $('#case-filter-search').value);
+            updateCaseFilterTrigger(allItems);
+            debouncedRenderPivot();
+        });
+        list.appendChild(li);
+    });
+}
+
+function updateCaseFilterTrigger(allItems) {
+    const trigger = $('#case-filter-trigger');
+    if (!trigger) return;
+    const selected = allItems.filter(i => selectedCaseGroups.has(i)).length;
+    trigger.textContent = selected === allItems.length ? 'הכל ▾' : `${selected} מתוך ${allItems.length} ▾`;
 }
 
 function rebuildEmployeeFilter() {
-    if (!empFilterTS) return;
     const allEmps = getAllEmployees();
     if (allEmps.length === 0) return;
 
@@ -746,10 +802,62 @@ function rebuildEmployeeFilter() {
         allEmps.forEach(e => selectedEmployees.add(e));
     }
 
-    empFilterTS.clearOptions();
-    allEmps.forEach(emp => empFilterTS.addOption({ value: emp, text: emp }));
-    empFilterTS.refreshOptions(false);
-    empFilterTS.setValue([...selectedEmployees], true);
+    renderEmpFilterList(allEmps, '');
+    updateEmpFilterTrigger(allEmps);
+}
+
+function renderEmpFilterList(allEmps, searchTerm) {
+    const list = $('#emp-filter-list');
+    if (!list) return;
+    const term = searchTerm.toLowerCase();
+    const filtered = term ? allEmps.filter(e => e.toLowerCase().includes(term)) : allEmps;
+
+    // "Select all" state reflects ALL employees, not just filtered
+    const allChecked = allEmps.length > 0 && allEmps.every(e => selectedEmployees.has(e));
+    const someChecked = !allChecked && allEmps.some(e => selectedEmployees.has(e));
+
+    list.innerHTML = '';
+
+    // "Select all" row — clicking selects/deselects ALL employees
+    const allLi = document.createElement('li');
+    allLi.className = 'xf-item xf-select-all';
+    allLi.innerHTML = `<label><input type="checkbox" /><span>בחר הכל</span></label>`;
+    const allCb = allLi.querySelector('input');
+    allCb.checked = allChecked;
+    allCb.indeterminate = someChecked;
+    allCb.addEventListener('change', () => {
+        if (allCb.checked) allEmps.forEach(e => selectedEmployees.add(e));
+        else allEmps.forEach(e => selectedEmployees.delete(e));
+        renderEmpFilterList(allEmps, $('#emp-filter-search').value);
+        updateEmpFilterTrigger(allEmps);
+        debouncedRenderPivot();
+    });
+    list.appendChild(allLi);
+
+    // Individual rows
+    filtered.forEach(emp => {
+        const li = document.createElement('li');
+        li.className = 'xf-item';
+        li.innerHTML = `<label><input type="checkbox" /><span>${esc(emp)}</span></label>`;
+        const cb = li.querySelector('input');
+        cb.value = emp;
+        cb.checked = selectedEmployees.has(emp);
+        cb.addEventListener('change', () => {
+            if (cb.checked) selectedEmployees.add(emp);
+            else selectedEmployees.delete(emp);
+            renderEmpFilterList(allEmps, $('#emp-filter-search').value);
+            updateEmpFilterTrigger(allEmps);
+            debouncedRenderPivot();
+        });
+        list.appendChild(li);
+    });
+}
+
+function updateEmpFilterTrigger(allEmps) {
+    const trigger = $('#emp-filter-trigger');
+    if (!trigger) return;
+    const selected = allEmps.filter(e => selectedEmployees.has(e)).length;
+    trigger.textContent = selected === allEmps.length ? 'הכל ▾' : `${selected} מתוך ${allEmps.length} ▾`;
 }
 
 // ============================================================
@@ -830,34 +938,43 @@ function getFilteredEntries() {
         const td = new Date(to + 'T23:59:59');
         if (!isNaN(td.getTime())) entries = entries.filter(e => e.date <= td);
     }
-    if (selectedEmployees.size > 0) {
-        entries = entries.filter(e => selectedEmployees.has(e.employee));
-    }
+    entries = entries.filter(e => selectedEmployees.has(e.employee));
     return entries;
 }
 
-function getAllEmployees() {
-    return [...new Set(rawEntries.map(e => e.employee))].filter(Boolean).sort();
+function _buildCache() {
+    if (_cache.valid) return;
+    const employees = new Set();
+    const cases = new Map();
+    const clients = new Set();
+    const months = new Set();
+    for (const e of rawEntries) {
+        if (e.employee) employees.add(e.employee);
+        if (!cases.has(e.caseKey)) cases.set(e.caseKey, { client: e.client, caseName: e.caseName, key: e.caseKey });
+        if (e.client && e.client.trim()) clients.add(e.client);
+        const m = formatMonth(e.date);
+        if (m) months.add(m);
+    }
+    _cache.employees = [...employees].sort();
+    _cache.cases = [...cases.values()].sort((a, b) => a.key.localeCompare(b.key));
+    _cache.clients = [...clients].sort();
+    _cache.months = [...months].sort((a, b) => {
+        const [mA, yA] = a.split('/').map(Number);
+        const [mB, yB] = b.split('/').map(Number);
+        return yA !== yB ? yA - yB : mA - mB;
+    });
+    _cache.valid = true;
 }
+
+function getAllEmployees() { _buildCache(); return _cache.employees; }
+function getAllCases()     { _buildCache(); return _cache.cases; }
+function getAllClients()   { _buildCache(); return _cache.clients; }
+function getAllMonths()    { _buildCache(); return _cache.months; }
 
 function getAssignedEmployees() {
     const assigned = new Set();
     Object.values(employeeGroups).forEach(members => members.forEach(m => assigned.add(m)));
     return assigned;
-}
-
-function getAllCases() {
-    const cases = new Map();
-    rawEntries.forEach(e => {
-        if (!cases.has(e.caseKey)) cases.set(e.caseKey, { client: e.client, caseName: e.caseName, key: e.caseKey });
-    });
-    return [...cases.values()].sort((a, b) => a.key.localeCompare(b.key));
-}
-
-function getAllClients() {
-    const clients = new Set();
-    rawEntries.forEach(e => { if (e.client && e.client.trim()) clients.add(e.client); });
-    return [...clients].sort();
 }
 
 function getAssignedCases() {
@@ -874,18 +991,6 @@ function caseLabel(key) {
     return `${clientShort} / ${cas}`;
 }
 
-function getAllMonths() {
-    const months = new Set();
-    rawEntries.forEach(e => {
-        const m = formatMonth(e.date);
-        if (m) months.add(m);
-    });
-    return [...months].sort((a, b) => {
-        const [mA, yA] = a.split('/').map(Number);
-        const [mB, yB] = b.split('/').map(Number);
-        return yA !== yB ? yA - yB : mA - mB;
-    });
-}
 
 // ============================================================
 // Debounced render for performance on rapid control changes
@@ -1252,10 +1357,7 @@ function renderPivot() {
             cols = [...colSet].sort();
             getCol = (e) => empGroupMap[e.employee] || (ungroupedMode === 'individual' ? e.employee : 'אחר');
         } else {
-            cols = getAllEmployees();
-            if (selectedEmployees.size > 0) {
-                cols = cols.filter(emp => selectedEmployees.has(emp));
-            }
+            cols = getAllEmployees().filter(emp => selectedEmployees.has(emp));
             getCol = (e) => e.employee || 'ללא עובד';
             if (!cols.includes('ללא עובד') && entries.some(e => !e.employee)) cols.push('ללא עובד');
         }
@@ -1270,11 +1372,7 @@ function renderPivot() {
         // Group by client name
         const allClients = getAllClients();
         // Filter by selected clients
-        if (selectedCaseGroups.size > 0) {
-            rowKeys = allClients.filter(c => selectedCaseGroups.has(c));
-        } else {
-            rowKeys = allClients;
-        }
+        rowKeys = allClients.filter(c => selectedCaseGroups.has(c));
         getRow = (e) => e.client || 'ללא לקוח';
         rowLabel = (r) => r;
     } else if (caseGroupMode === 'groups' && Object.keys(caseGroups).length > 0) {
@@ -1316,18 +1414,54 @@ function renderPivot() {
     rowKeys.forEach(r => { pivotData[r] = {}; rowTotals[r] = 0; });
     cols.forEach(c => { colTotals[c] = 0; });
 
-    entries.forEach(e => {
+    // --- Build employee group map for sub bar charts (months mode) ---
+    let empGMap = null;
+    let empGroupLabels = [];
+    let subBarData = {};
+    const rowKeySet = new Set(rowKeys);
+    if (colMode === 'months' && Object.keys(employeeGroups).length > 0) {
+        empGMap = {};
+        Object.entries(employeeGroups).forEach(([gName, members]) => {
+            members.forEach(m => { empGMap[m] = gName; });
+        });
+        const egSet = new Set();
+        getAllEmployees().forEach(emp => {
+            if (empGMap[emp]) egSet.add(empGMap[emp]);
+            else egSet.add('אחר');
+        });
+        empGroupLabels = [...egSet].sort();
+        rowKeys.forEach(r => {
+            subBarData[r] = {};
+            empGroupLabels.forEach(eg => { subBarData[r][eg] = {}; });
+        });
+    } else if (colMode === 'months') {
+        // Individual employees as "groups" for stacked bar
+        empGMap = null;
+    }
+
+    // --- Single pass: build pivot data + subBarData ---
+    for (const e of entries) {
         const col = getCol(e);
         const row = getRow(e);
-        if (!pivotData[row]) return; // skip rows not in selected groups
+        if (!rowKeySet.has(row)) continue;
         const val = e[hourKey];
         pivotData[row][col] = (pivotData[row][col] || 0) + val;
         rowTotals[row] = (rowTotals[row] || 0) + val;
         colTotals[col] = (colTotals[col] || 0) + val;
         grandTotal += val;
-    });
+        if (colMode === 'months' && empGMap) {
+            const month = formatMonth(e.date) || 'ללא תאריך';
+            const eg = empGMap[e.employee] || 'אחר';
+            if (!subBarData[row][eg]) subBarData[row][eg] = {};
+            subBarData[row][eg][month] = (subBarData[row][eg][month] || 0) + val;
+        }
+    }
 
-    // --- Render ---
+    // --- Drop empty rows and columns ---
+    rowKeys = rowKeys.filter(r => (rowTotals[r] || 0) > 0);
+    cols = cols.filter(c => (colTotals[c] || 0) > 0);
+
+    // --- Render table (synchronous — user sees this first) ---
     const rowTypeLabel = caseGroupMode === 'client' ? 'לקוח' : (caseGroupMode === 'groups' && Object.keys(caseGroups).length > 0 ? 'קבוצה' : 'תיק');
     const cornerLabel = colMode === 'months' ? `${rowTypeLabel} / חודש` : `${rowTypeLabel} / עובד`;
     const thead = $('#pivot-table thead');
@@ -1339,59 +1473,27 @@ function renderPivot() {
         <th class="pivot-total-header">סה"כ</th>
     </tr>`;
 
-    tbody.innerHTML = rowKeys.map(r => {
+    const tbodyParts = [];
+    for (const r of rowKeys) {
         const label = rowLabel(r);
-        return `<tr>
-            <td><strong>${esc(label)}</strong></td>
-            ${cols.map(c => {
-                const v = pivotData[r]?.[c] || 0;
-                return `<td class="pivot-value">${v ? v.toFixed(2) : '-'}</td>`;
-            }).join('')}
-            <td class="pivot-value pivot-total">${(rowTotals[r] || 0).toFixed(2)}</td>
-        </tr>`;
-    }).join('') + `<tr class="pivot-total-row">
-        <td><strong>סה"כ</strong></td>
-        ${cols.map(c => `<td class="pivot-value">${(colTotals[c] || 0).toFixed(2)}</td>`).join('')}
-        <td class="pivot-value pivot-total">${grandTotal.toFixed(2)}</td>
-    </tr>`;
-
-    // --- Build per-row-col-empgroup data for sub bar charts ---
-    let empGroupLabels = [];
-    let subBarData = {};  // { rowKey: { empGroup: { month: hours } } }
-    if (colMode === 'months') {
-        // Build employee group mapping
-        const empGMap = {};
-        if (Object.keys(employeeGroups).length > 0) {
-            Object.entries(employeeGroups).forEach(([gName, members]) => {
-                members.forEach(m => { empGMap[m] = gName; });
-            });
+        tbodyParts.push(`<tr><td><strong>${esc(label)}</strong></td>`);
+        for (const c of cols) {
+            const v = pivotData[r]?.[c] || 0;
+            tbodyParts.push(`<td class="pivot-value">${v ? v.toFixed(2) : '-'}</td>`);
         }
-        const egSet = new Set();
-        getAllEmployees().forEach(emp => {
-            const g = empGMap[emp] || (Object.keys(employeeGroups).length > 0 ? 'אחר' : emp);
-            // Only use groups, not individual employees for stacked bars
-            if (empGMap[emp]) egSet.add(empGMap[emp]);
-            else egSet.add('אחר');
-        });
-        empGroupLabels = [...egSet].sort();
-
-        rowKeys.forEach(r => {
-            subBarData[r] = {};
-            empGroupLabels.forEach(eg => { subBarData[r][eg] = {}; });
-        });
-
-        entries.forEach(e => {
-            const row = getRow(e);
-            if (!subBarData[row]) return;
-            const month = formatMonth(e.date) || 'ללא תאריך';
-            const eg = empGMap[e.employee] || 'אחר';
-            if (!subBarData[row][eg]) subBarData[row][eg] = {};
-            subBarData[row][eg][month] = (subBarData[row][eg][month] || 0) + e[hourKey];
-        });
+        tbodyParts.push(`<td class="pivot-value pivot-total">${(rowTotals[r] || 0).toFixed(2)}</td></tr>`);
     }
+    tbodyParts.push(`<tr class="pivot-total-row"><td><strong>סה"כ</strong></td>`);
+    for (const c of cols) {
+        tbodyParts.push(`<td class="pivot-value">${(colTotals[c] || 0).toFixed(2)}</td>`);
+    }
+    tbodyParts.push(`<td class="pivot-value pivot-total">${grandTotal.toFixed(2)}</td></tr>`);
+    tbody.innerHTML = tbodyParts.join('');
 
-    // --- Render chart ---
-    renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGroupLabels, subBarData, getCol);
+    // --- Defer chart rendering until after table paints ---
+    requestAnimationFrame(() => {
+        renderPivotChart(cols, rowKeys, rowLabel, pivotData, colTotals, empGroupLabels, subBarData, getCol);
+    });
 }
 
 // ============================================================
@@ -1710,7 +1812,7 @@ function reRenderSubCharts() {
 
 function rebuildSubChartFilter(validRows, rowLabelFn) {
     const area = $('#sub-chart-filter-area');
-    if (!area || !subChartFilterTS) return;
+    if (!area) return;
 
     if (!validRows || validRows.length < 2) {
         area.classList.add('hidden');
@@ -1718,17 +1820,72 @@ function rebuildSubChartFilter(validRows, rowLabelFn) {
     }
     area.classList.remove('hidden');
 
-    const validKeySet = new Set(validRows.map(r => String(r)));
-    selectedSubCharts = new Set([...selectedSubCharts].filter(k => validKeySet.has(k)));
+    const allKeys = validRows.map(r => String(r));
+    const newKeySet = new Set(allKeys);
 
-    subChartFilterTS.clearOptions();
-    validRows.forEach(r => subChartFilterTS.addOption({ value: String(r), text: rowLabelFn(r) }));
-    subChartFilterTS.refreshOptions(false);
+    // Detect whether the available items changed (new data/mode)
+    const prevKeys = _subChartFilterAllItems.map(i => i.key);
+    const keysChanged = allKeys.length !== prevKeys.length || allKeys.some((k, i) => k !== prevKeys[i]);
 
-    if (selectedSubCharts.size === 0) {
-        selectedSubCharts = new Set(validRows.map(r => String(r)));
-    }
-    subChartFilterTS.setValue([...selectedSubCharts], true);
+    _subChartFilterAllItems = allKeys.map(k => ({ key: k, label: rowLabelFn(validRows.find(r => String(r) === k) ?? k) }));
+
+    // Remove keys no longer valid
+    selectedSubCharts = new Set([...selectedSubCharts].filter(k => newKeySet.has(k)));
+    // Only reset to "all selected" when items change — preserve user's deliberate deselection
+    if (keysChanged) selectedSubCharts = new Set(allKeys);
+
+    renderSubChartFilterList(_subChartFilterAllItems, '');
+    updateSubChartFilterTrigger(_subChartFilterAllItems);
+}
+
+function renderSubChartFilterList(allItems, searchTerm) {
+    const list = $('#sub-chart-filter-list');
+    if (!list) return;
+    const term = searchTerm.toLowerCase();
+    const filtered = term ? allItems.filter(i => i.label.toLowerCase().includes(term)) : allItems;
+
+    const allChecked = allItems.length > 0 && allItems.every(i => selectedSubCharts.has(i.key));
+    const someChecked = !allChecked && allItems.some(i => selectedSubCharts.has(i.key));
+
+    list.innerHTML = '';
+
+    const allLi = document.createElement('li');
+    allLi.className = 'xf-item xf-select-all';
+    allLi.innerHTML = `<label><input type="checkbox" /><span>בחר הכל</span></label>`;
+    const allCb = allLi.querySelector('input');
+    allCb.checked = allChecked;
+    allCb.indeterminate = someChecked;
+    allCb.addEventListener('change', () => {
+        if (allCb.checked) allItems.forEach(i => selectedSubCharts.add(i.key));
+        else allItems.forEach(i => selectedSubCharts.delete(i.key));
+        renderSubChartFilterList(allItems, $('#sub-chart-filter-search').value);
+        updateSubChartFilterTrigger(allItems);
+        reRenderSubCharts();
+    });
+    list.appendChild(allLi);
+
+    filtered.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'xf-item';
+        li.innerHTML = `<label><input type="checkbox" /><span>${esc(item.label)}</span></label>`;
+        const cb = li.querySelector('input');
+        cb.checked = selectedSubCharts.has(item.key);
+        cb.addEventListener('change', () => {
+            if (cb.checked) selectedSubCharts.add(item.key);
+            else selectedSubCharts.delete(item.key);
+            renderSubChartFilterList(allItems, $('#sub-chart-filter-search').value);
+            updateSubChartFilterTrigger(allItems);
+            reRenderSubCharts();
+        });
+        list.appendChild(li);
+    });
+}
+
+function updateSubChartFilterTrigger(allItems) {
+    const trigger = $('#sub-chart-filter-trigger');
+    if (!trigger) return;
+    const selected = allItems.filter(i => selectedSubCharts.has(i.key)).length;
+    trigger.textContent = selected === allItems.length ? 'הכל ▾' : `${selected} מתוך ${allItems.length} ▾`;
 }
 
 function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, empGroupLabels, colLabelFn) {
@@ -1749,9 +1906,7 @@ function renderSubCharts(cols, rowKeys, rowLabel, dataMap, colorMap, chartType, 
     rebuildSubChartFilter(allValidRows, rowLabel);
 
     // Apply sub-chart filter
-    const validRows = selectedSubCharts.size > 0
-        ? allValidRows.filter(r => selectedSubCharts.has(String(r)))
-        : allValidRows;
+    const validRows = allValidRows.filter(r => selectedSubCharts.has(String(r)));
 
     const BATCH = 4;
     let shown = 0;
@@ -2258,71 +2413,42 @@ function escData(str) {
 })();
 
 // ============================================================
-// Tom Select initialization
+// Excel-style filter dropdown initialization
 // ============================================================
-function initTomSelects() {
-    caseFilterTS = new TomSelect('#case-filter-select', {
-        plugins: ['remove_button'],
-        maxOptions: null,
-        onChange: function() {
-            selectedCaseGroups = new Set(this.getValue());
-            debouncedRenderPivot();
+function initXfDropdown(triggerId, dropdownId, searchId, onSearch, onClose) {
+    const trigger = $(triggerId);
+    const dropdown = $(dropdownId);
+    const search = $(searchId);
+    if (!trigger || !dropdown) return;
+
+    trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = !dropdown.classList.contains('hidden');
+        // Close all other open dropdowns first
+        $$('.xf-dropdown').forEach(d => d.classList.add('hidden'));
+        if (!isOpen) {
+            dropdown.classList.remove('hidden');
+            setTimeout(() => search && search.focus(), 0);
         }
     });
-    empFilterTS = new TomSelect('#employee-filter-select', {
-        plugins: ['remove_button'],
-        maxOptions: null,
-        onChange: function() {
-            selectedEmployees = new Set(this.getValue());
-            debouncedRenderPivot();
-        }
-    });
-    subChartFilterTS = new TomSelect('#sub-chart-filter-select', {
-        plugins: ['remove_button'],
-        maxOptions: null,
-        onChange: function() {
-            selectedSubCharts = new Set(this.getValue());
-            reRenderSubCharts();
-        }
-    });
+
+    if (search) {
+        search.addEventListener('input', () => onSearch(search.value));
+    }
 }
-initTomSelects();
 
-// Case filter select-all / clear-all
-$('#case-select-all').addEventListener('click', () => {
-    const allValues = Object.keys(caseFilterTS.options);
-    selectedCaseGroups = new Set(allValues);
-    caseFilterTS.setValue(allValues, true);
-    debouncedRenderPivot();
-});
-$('#case-clear-all').addEventListener('click', () => {
-    selectedCaseGroups = new Set();
-    caseFilterTS.setValue([], true);
-    debouncedRenderPivot();
+// Shared click-outside handler to close all XF dropdowns
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.xf-wrapper')) {
+        $$('.xf-dropdown').forEach(d => d.classList.add('hidden'));
+    }
 });
 
-// Employee filter select-all / clear-all
-$('#emp-select-all').addEventListener('click', () => {
-    const allValues = Object.keys(empFilterTS.options);
-    selectedEmployees = new Set(allValues);
-    empFilterTS.setValue(allValues, true);
-    debouncedRenderPivot();
-});
-$('#emp-clear-all').addEventListener('click', () => {
-    selectedEmployees = new Set();
-    empFilterTS.setValue([], true);
-    debouncedRenderPivot();
-});
+initXfDropdown('#case-filter-trigger', '#case-filter-dropdown', '#case-filter-search',
+    (term) => renderCaseFilterList(_caseFilterAllItems, term));
 
-// Sub-chart filter select-all / clear-all
-$('#sub-chart-select-all').addEventListener('click', () => {
-    const allValues = Object.keys(subChartFilterTS.options);
-    selectedSubCharts = new Set(allValues);
-    subChartFilterTS.setValue(allValues, true);
-    reRenderSubCharts();
-});
-$('#sub-chart-clear-all').addEventListener('click', () => {
-    selectedSubCharts = new Set();
-    subChartFilterTS.setValue([], true);
-    reRenderSubCharts();
-});
+initXfDropdown('#emp-filter-trigger', '#emp-filter-dropdown', '#emp-filter-search',
+    (term) => renderEmpFilterList(getAllEmployees(), term));
+
+initXfDropdown('#sub-chart-filter-trigger', '#sub-chart-filter-dropdown', '#sub-chart-filter-search',
+    (term) => renderSubChartFilterList(_subChartFilterAllItems, term));
