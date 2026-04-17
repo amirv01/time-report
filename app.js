@@ -102,10 +102,10 @@ function handleFile(file) {
                     resolve(); return;
                 }
 
+                // Use header row (not first data row) for file-type detection — first data row may have empty cells
+                const headerRow = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 })[0] || [];
                 if (name.includes('עובדים')) {
-                    // Validate structure before treating as employee groups
-                    const testRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { range: 0 });
-                    if (testRows.length > 0 && 'קבוצה' in testRows[0] && 'עובד' in testRows[0]) {
+                    if (headerRow.includes('קבוצה') && headerRow.includes('עובד')) {
                         importEmployeeGroups(wb);
                         showFileStatus(name, 'קבוצות עובדים נטענו');
                     } else {
@@ -114,9 +114,7 @@ function handleFile(file) {
                         showFileStatus(name, 'דוח שעות נטען');
                     }
                 } else if (name.includes('תיקים')) {
-                    // Validate structure before treating as case groups
-                    const testRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { range: 0 });
-                    if (testRows.length > 0 && 'קבוצה' in testRows[0]) {
+                    if (headerRow.includes('קבוצה')) {
                         importCaseGroups(wb);
                         showFileStatus(name, 'קבוצות תיקים נטענו');
                     } else {
@@ -152,12 +150,14 @@ function showFileStatus(name, msg) {
 // Validation & Import: Employee Groups
 // ============================================================
 function importEmployeeGroups(wb) {
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet);
+    // Read actual header row to avoid false negatives when first data row has empty cells
+    const headerRow = XLSX.utils.sheet_to_json(sheet, { header: 1 })[0] || [];
 
     // Check 15: Required columns
-    if (!rows.length) { alert('קובץ קבוצות עובדים ריק'); return; }
-    const first = rows[0];
-    if (!('קבוצה' in first) || !('עובד' in first)) {
+    if (!rows.length && !headerRow.length) { alert('קובץ קבוצות עובדים ריק'); return; }
+    if (!headerRow.includes('קבוצה') || !headerRow.includes('עובד')) {
         alert('קובץ קבוצות עובדים לא תקין.\nנדרשות עמודות: "קבוצה", "עובד"');
         return;
     }
@@ -170,8 +170,7 @@ function importEmployeeGroups(wb) {
         const group = r['קבוצה'];
         const member = r['עובד'];
         if (!group && !member) return; // skip empty rows
-        // Check 16: Empty group names
-        if (!group) { errors.push(`שורה ${i + 2}: חסר שם קבוצה`); return; }
+        if (!group) return; // ungrouped employee — skip on import
         // Check 17: Empty member names
         if (!member) { errors.push(`שורה ${i + 2}: חסר שם עובד`); return; }
         const g = String(group).trim();
@@ -228,16 +227,18 @@ function importEmployeeGroups(wb) {
 // Validation & Import: Case Groups
 // ============================================================
 function importCaseGroups(wb) {
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet);
+    // Read actual header row (row 1) to avoid false negatives when first data row has empty cells
+    const headerRow = XLSX.utils.sheet_to_json(sheet, { header: 1 })[0] || [];
 
-    if (!rows.length) { alert('קובץ קבוצות תיקים ריק'); return; }
-    const first = rows[0];
-    if (!('קבוצה' in first)) {
+    if (!rows.length && !headerRow.length) { alert('קובץ קבוצות תיקים ריק'); return; }
+    if (!headerRow.includes('קבוצה')) {
         alert('קובץ קבוצות תיקים לא תקין.\nנדרשת עמודה: "קבוצה"\nאופציונלי: "לקוח", "תיק"');
         return;
     }
     // Must have at least one of לקוח or תיק
-    if (!('לקוח' in first) && !('תיק' in first)) {
+    if (!headerRow.includes('לקוח') && !headerRow.includes('תיק')) {
         alert('קובץ קבוצות תיקים לא תקין.\nנדרשת לפחות אחת מהעמודות: "לקוח", "תיק"');
         return;
     }
@@ -249,7 +250,7 @@ function importCaseGroups(wb) {
         const client = r['לקוח'] || '';
         const cas = r['תיק'] || '';
         if (!group && !client && !cas) return; // skip empty rows
-        if (!group) { errors.push(`שורה ${i + 2}: חסר שם קבוצה`); return; }
+        if (!group) return; // ungrouped case — skip on import
         const g = String(group).trim();
         const key = String(client).trim() + '|' + String(cas).trim();
         if (key === '|') { errors.push(`שורה ${i + 2}: חסרים לקוח ותיק`); return; }
@@ -2531,7 +2532,12 @@ $('#download-emp-groups').addEventListener('click', () => {
     Object.entries(employeeGroups).forEach(([group, members]) => {
         members.forEach(m => data.push({ 'קבוצה': group, 'עובד': m }));
     });
-    if (!data.length) { alert('אין קבוצות עובדים לייצוא'); return; }
+    // Append ungrouped employees with empty group name
+    const groupedSet = new Set(Object.values(employeeGroups).flat());
+    getAllEmployees().forEach(emp => {
+        if (!groupedSet.has(emp)) data.push({ 'קבוצה': '', 'עובד': emp });
+    });
+    if (!data.length) { alert('אין עובדים לייצוא'); return; }
     downloadExcel(data, 'קבוצות_עובדים.xlsx');
 });
 
@@ -2559,7 +2565,15 @@ $('#download-case-groups').addEventListener('click', () => {
             data.push({ 'קבוצה': group, 'לקוח': parts[0] || '', 'תיק': parts[1] || '' });
         });
     });
-    if (!data.length) { alert('אין קבוצות תיקים לייצוא'); return; }
+    // Append ungrouped cases with empty group name
+    const groupedKeys = new Set(Object.values(caseGroups).flat());
+    getAllCases().forEach(c => {
+        if (!groupedKeys.has(c.key)) {
+            const parts = c.key.split('|');
+            data.push({ 'קבוצה': '', 'לקוח': parts[0] || '', 'תיק': parts[1] || '' });
+        }
+    });
+    if (!data.length) { alert('אין תיקים לייצוא'); return; }
     downloadExcel(data, 'קבוצות_תיקים.xlsx');
 });
 
