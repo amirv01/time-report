@@ -758,6 +758,15 @@ th.pivot-sortable:hover {
     color: #c0392b;
 }
 
+.group-header .rename-btn {
+    color: var(--gray-400);
+    font-size: 0.9rem;
+}
+
+.group-header .rename-btn:hover {
+    color: var(--navy);
+}
+
 .group-members {
     display: flex;
     flex-wrap: wrap;

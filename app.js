@@ -21,6 +21,8 @@ let sortDir = 'desc';              // 'asc' | 'desc'
 let selectedEmployees = new Set();       // individual employee filter
 let selectedEmployeeGroups = new Set();  // employee group filter (when groupEmployees=true)
 let caseFilterMode = 'case';             // 'case'|'client'|'groups' — filter mode when caseGroupMode='none'
+let phantomEmployees = [];               // ungrouped employees from file not in current data
+let phantomCases = [];                   // ungrouped case keys from file not in current data
 let selectedSubCharts = new Set();  // empty = all sub-charts shown
 let _lastSubChartArgs = null;       // cached for re-render from sub-chart filter
 let _caseFilterAllItems = [];      // current item list for case filter
@@ -165,12 +167,21 @@ function importEmployeeGroups(wb) {
     const errors = [];
     const newGroups = {};
     const memberToGroups = {}; // track which groups each member belongs to
+    const newPhantomEmps = []; // ungrouped employees from file not yet in current data
 
     rows.forEach((r, i) => {
         const group = r['קבוצה'];
         const member = r['עובד'];
         if (!group && !member) return; // skip empty rows
-        if (!group) return; // ungrouped employee — skip on import
+        if (!group) {
+            // Ungrouped employee — keep as phantom if not in current data
+            if (member) {
+                const m = String(member).trim();
+                const inData = getAllEmployees().includes(m);
+                if (!inData && !newPhantomEmps.includes(m)) newPhantomEmps.push(m);
+            }
+            return;
+        }
         // Check 17: Empty member names
         if (!member) { errors.push(`שורה ${i + 2}: חסר שם עובד`); return; }
         const g = String(group).trim();
@@ -218,9 +229,10 @@ function importEmployeeGroups(wb) {
     }
 
     employeeGroups = newGroups;
+    phantomEmployees = newPhantomEmps;
     renderEmployeeGroups();
     renderPivot();
-    console.log(`Imported ${Object.keys(newGroups).length} employee groups`);
+    console.log(`Imported ${Object.keys(newGroups).length} employee groups, ${phantomEmployees.length} phantom employees`);
 }
 
 // ============================================================
@@ -245,12 +257,22 @@ function importCaseGroups(wb) {
 
     const errors = [];
     const newGroups = {};
+    const newPhantomCases = []; // ungrouped case keys from file not yet in current data
+
     rows.forEach((r, i) => {
         const group = r['קבוצה'];
         const client = r['לקוח'] || '';
         const cas = r['תיק'] || '';
         if (!group && !client && !cas) return; // skip empty rows
-        if (!group) return; // ungrouped case — skip on import
+        if (!group) {
+            // Ungrouped case — keep as phantom if not in current data
+            const key = String(client).trim() + '|' + String(cas).trim();
+            if (key !== '|') {
+                const inData = getAllCases().some(c => c.key === key);
+                if (!inData && !newPhantomCases.includes(key)) newPhantomCases.push(key);
+            }
+            return;
+        }
         const g = String(group).trim();
         const key = String(client).trim() + '|' + String(cas).trim();
         if (key === '|') { errors.push(`שורה ${i + 2}: חסרים לקוח ותיק`); return; }
@@ -301,13 +323,14 @@ function importCaseGroups(wb) {
     }
 
     caseGroups = newGroups;
+    phantomCases = newPhantomCases;
     // Select all new groups (+ אחר) in the filter
     Object.keys(newGroups).forEach(g => selectedCaseGroups.add(g));
     selectedCaseGroups.add('אחר');
     renderCaseGroups();
     rebuildCaseFilter();
     renderPivot();
-    console.log(`Imported ${Object.keys(newGroups).length} case groups`);
+    console.log(`Imported ${Object.keys(newGroups).length} case groups, ${phantomCases.length} phantom cases`);
 }
 
 // ============================================================
@@ -453,6 +476,16 @@ function parseReport(rows) {
 
     // Invalidate derived-data cache since rawEntries changed
     invalidateCache();
+
+    // Prune phantoms that are now present in the new data
+    if (phantomEmployees.length) {
+        const empSet = new Set(getAllEmployees());
+        phantomEmployees = phantomEmployees.filter(e => !empSet.has(e));
+    }
+    if (phantomCases.length) {
+        const caseKeySet = new Set(getAllCases().map(c => c.key));
+        phantomCases = phantomCases.filter(k => !caseKeySet.has(k));
+    }
 
     // Update date filters based on all current entries
     updateDateFilters();
@@ -1257,6 +1290,7 @@ function renderEmployeeGroups() {
         `<div class="group-card">
             <div class="group-header">
                 <strong>${esc(name)}</strong>
+                <button class="rename-btn" data-action="rename-emp-group" data-name="${escData(name)}" title="שנה שם">✎</button>
                 <button data-action="remove-emp-group" data-name="${escData(name)}" title="מחק קבוצה">&times;</button>
             </div>
             <div class="group-members" data-group="${escData(name)}" data-type="emp">
@@ -1302,6 +1336,7 @@ function renderCaseGroups() {
         `<div class="group-card">
             <div class="group-header">
                 <strong>${esc(name)}</strong>
+                <button class="rename-btn" data-action="rename-case-group" data-name="${escData(name)}" title="שנה שם">✎</button>
                 <button data-action="remove-case-group" data-name="${escData(name)}" title="מחק קבוצה">&times;</button>
             </div>
             <div class="group-members" data-group="${escData(name)}" data-type="case">
@@ -1327,7 +1362,27 @@ function renderCaseGroups() {
         const btn = e.target.closest('[data-action]');
         if (!btn) return;
         const action = btn.dataset.action;
-        if (action === 'remove-emp-group') { delete employeeGroups[btn.dataset.name]; renderEmployeeGroups(); renderPivot(); }
+        if (action === 'rename-emp-group') {
+            const oldName = btn.dataset.name;
+            const newName = prompt('שם חדש לקבוצה:', oldName)?.trim();
+            if (!newName || newName === oldName) return;
+            if (newName === 'אחר') { alert('לא ניתן להשתמש בשם "אחר"'); return; }
+            if (employeeGroups[newName]) { alert(`קבוצה בשם "${newName}" כבר קיימת`); return; }
+            employeeGroups[newName] = employeeGroups[oldName];
+            delete employeeGroups[oldName];
+            if (selectedEmployeeGroups.has(oldName)) { selectedEmployeeGroups.delete(oldName); selectedEmployeeGroups.add(newName); }
+            rebuildEmployeeFilter(); renderEmployeeGroups(); renderPivot();
+        } else if (action === 'rename-case-group') {
+            const oldName = btn.dataset.name;
+            const newName = prompt('שם חדש לקבוצה:', oldName)?.trim();
+            if (!newName || newName === oldName) return;
+            if (newName === 'אחר') { alert('לא ניתן להשתמש בשם "אחר"'); return; }
+            if (caseGroups[newName]) { alert(`קבוצה בשם "${newName}" כבר קיימת`); return; }
+            caseGroups[newName] = caseGroups[oldName];
+            delete caseGroups[oldName];
+            if (selectedCaseGroups.has(oldName)) { selectedCaseGroups.delete(oldName); selectedCaseGroups.add(newName); }
+            renderCaseGroups(); rebuildCaseFilter(); renderPivot();
+        } else if (action === 'remove-emp-group') { delete employeeGroups[btn.dataset.name]; rebuildEmployeeFilter(); renderEmployeeGroups(); renderPivot(); }
         else if (action === 'remove-emp-member') { employeeGroups[btn.dataset.group] = employeeGroups[btn.dataset.group].filter(m => m !== btn.dataset.member); renderEmployeeGroups(); renderPivot(); }
         else if (action === 'remove-case-group') { delete caseGroups[btn.dataset.name]; renderCaseGroups(); rebuildCaseFilter(); renderPivot(); }
         else if (action === 'remove-case-member') { caseGroups[btn.dataset.group] = caseGroups[btn.dataset.group].filter(m => m !== btn.dataset.member); renderCaseGroups(); rebuildCaseFilter(); renderPivot(); }
@@ -2208,12 +2263,39 @@ $('#download-pdf').addEventListener('click', async () => {
     const entries = getFilteredEntries();
     if (!entries.length) { alert('אין נתונים להצגה'); return; }
 
+    // Build suggested title and let user edit it
+    const fromVal = $('#date-from').value;
+    const toVal = $('#date-to').value;
+    let suggestedDateRange = '';
+    if (fromVal && toVal) suggestedDateRange = `${formatDateHebrew(new Date(fromVal + 'T00:00:00'))} - ${formatDateHebrew(new Date(toVal + 'T00:00:00'))}`;
+    else if (fromVal) suggestedDateRange = `${formatDateHebrew(new Date(fromVal + 'T00:00:00'))} ואילך`;
+    else if (toVal) suggestedDateRange = `עד ${formatDateHebrew(new Date(toVal + 'T00:00:00'))}`;
+    else {
+        const dates = entries.filter(e => e.date instanceof Date && !isNaN(e.date.getTime())).map(e => e.date);
+        if (dates.length) {
+            const ts = dates.map(d => d.getTime());
+            const minD = new Date(ts.reduce((a, b) => a < b ? a : b));
+            const maxD = new Date(ts.reduce((a, b) => a > b ? a : b));
+            suggestedDateRange = `${formatDateHebrew(minD)} - ${formatDateHebrew(maxD)}`;
+        }
+    }
+    const suggestedClients = [...new Set(entries.map(e => e.client).filter(Boolean))].sort();
+    let suggestedClientStr = suggestedClients.slice(0, 3).join(', ');
+    if (suggestedClients.length > 3) suggestedClientStr += ' ...';
+    const suggestedParts = ['סיכום דוח שעות'];
+    if (suggestedDateRange) suggestedParts.push(suggestedDateRange);
+    if (suggestedClientStr) suggestedParts.push(suggestedClientStr);
+    const suggestedTitle = suggestedParts.join(' || ');
+
+    const userTitle = prompt('כותרת הדוח:', suggestedTitle);
+    if (userTitle === null) return; // user cancelled
+
     const btn = $('#download-pdf');
     btn.disabled = true;
     btn.textContent = '...מייצר דוח';
 
     try {
-        await generatePdfReport(entries);
+        await generatePdfReport(entries, userTitle.trim() || suggestedTitle);
     } catch (e) {
         console.error('PDF generation error:', e);
         alert('שגיאה ביצירת הדוח: ' + e.message);
@@ -2233,7 +2315,7 @@ async function captureElement(el, scale) {
     return canvas;
 }
 
-async function generatePdfReport(entries) {
+async function generatePdfReport(entries, reportTitle) {
     const { jsPDF } = window.jspdf;
     // Track temp DOM elements for cleanup on error
     const _tempElements = [];
@@ -2242,27 +2324,6 @@ async function generatePdfReport(entries) {
     function _cleanupAllTemp() { _tempElements.forEach(el => { if (el.parentNode) el.parentNode.removeChild(el); }); _tempElements.length = 0; }
 
     try {
-
-    // --- Gather metadata ---
-    const fromVal = $('#date-from').value;
-    const toVal = $('#date-to').value;
-    let dateRange = '';
-    if (fromVal && toVal) dateRange = `${formatDateHebrew(new Date(fromVal + 'T00:00:00'))} - ${formatDateHebrew(new Date(toVal + 'T00:00:00'))}`;
-    else if (fromVal) dateRange = `${formatDateHebrew(new Date(fromVal + 'T00:00:00'))} ואילך`;
-    else if (toVal) dateRange = `עד ${formatDateHebrew(new Date(toVal + 'T00:00:00'))}`;
-    else {
-        const dates = entries.filter(e => e.date instanceof Date && !isNaN(e.date.getTime())).map(e => e.date);
-        if (dates.length) {
-            const timestamps = dates.map(d => d.getTime());
-            const minD = new Date(timestamps.reduce((a, b) => a < b ? a : b));
-            const maxD = new Date(timestamps.reduce((a, b) => a > b ? a : b));
-            dateRange = `${formatDateHebrew(minD)} - ${formatDateHebrew(maxD)}`;
-        }
-    }
-
-    const clients = [...new Set(entries.map(e => e.client).filter(Boolean))].sort();
-    let clientStr = clients.slice(0, 3).join(', ');
-    if (clients.length > 3) clientStr += ' ...';
 
     // --- Determine orientation based on pivot table width ---
     const pivotTable = $('#pivot-table');
@@ -2299,10 +2360,7 @@ async function generatePdfReport(entries) {
     }
 
     // --- Title (rendered as a temporary DOM element, captured as image) ---
-    const titleParts = ['סיכום דוח שעות'];
-    if (dateRange) titleParts.push(dateRange);
-    if (clientStr) titleParts.push(clientStr);
-    const titleText = titleParts.join(' || ');
+    const titleText = reportTitle;
 
     const titleEl = document.createElement('div');
     titleEl.style.cssText = `
@@ -2532,10 +2590,15 @@ $('#download-emp-groups').addEventListener('click', () => {
     Object.entries(employeeGroups).forEach(([group, members]) => {
         members.forEach(m => data.push({ 'קבוצה': group, 'עובד': m }));
     });
-    // Append ungrouped employees with empty group name
+    // Append ungrouped employees from current data (not already in a group)
     const groupedSet = new Set(Object.values(employeeGroups).flat());
     getAllEmployees().forEach(emp => {
         if (!groupedSet.has(emp)) data.push({ 'קבוצה': '', 'עובד': emp });
+    });
+    // Append phantom employees (not in current data, not already included)
+    const includedEmps = new Set(data.map(r => r['עובד']));
+    phantomEmployees.forEach(emp => {
+        if (!includedEmps.has(emp)) data.push({ 'קבוצה': '', 'עובד': emp });
     });
     if (!data.length) { alert('אין עובדים לייצוא'); return; }
     downloadExcel(data, 'קבוצות_עובדים.xlsx');
@@ -2565,11 +2628,19 @@ $('#download-case-groups').addEventListener('click', () => {
             data.push({ 'קבוצה': group, 'לקוח': parts[0] || '', 'תיק': parts[1] || '' });
         });
     });
-    // Append ungrouped cases with empty group name
+    // Append ungrouped cases from current data (not already in a group)
     const groupedKeys = new Set(Object.values(caseGroups).flat());
     getAllCases().forEach(c => {
         if (!groupedKeys.has(c.key)) {
             const parts = c.key.split('|');
+            data.push({ 'קבוצה': '', 'לקוח': parts[0] || '', 'תיק': parts[1] || '' });
+        }
+    });
+    // Append phantom cases (not in current data, not already included)
+    const includedKeys = new Set(data.map(r => `${r['לקוח']}|${r['תיק']}`));
+    phantomCases.forEach(key => {
+        if (!includedKeys.has(key)) {
+            const parts = key.split('|');
             data.push({ 'קבוצה': '', 'לקוח': parts[0] || '', 'תיק': parts[1] || '' });
         }
     });
