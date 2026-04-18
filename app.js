@@ -1524,7 +1524,7 @@ function renderPivot() {
         rowKeys = allClients.filter(c => selectedCaseGroups.has(c));
         getRow = (e) => e.client || 'ללא לקוח';
         rowLabel = (r) => r;
-    } else if (caseGroupMode === 'groups' && Object.keys(caseGroups).length > 0) {
+    } else if (caseGroupMode === 'groups') {
         const caseGroupMap = {};
         Object.entries(caseGroups).forEach(([gName, members]) => {
             members.forEach(m => { caseGroupMap[m] = gName; });
@@ -1547,7 +1547,7 @@ function renderPivot() {
             return caseLabel(r);
         };
     } else {
-        // No grouping — individual cases, filtered by caseFilterMode
+        // caseGroupMode === 'none' — individual cases, filtered by caseFilterMode
         const allCases = getAllCases();
         let filteredKeys;
         if (caseFilterMode === 'case') {
