@@ -26,6 +26,8 @@ let phantomCases = [];                   // ungrouped case keys from file not in
 let selectedSubCharts = new Set();  // empty = all sub-charts shown
 let _lastSubChartArgs = null;       // cached for re-render from sub-chart filter
 let _caseFilterAllItems = [];      // current item list for case filter
+let _empFilterAllItems = [];       // current item list for employee filter
+let _empFilterSelectedSet = null;  // reference to active employee selected set
 let _subChartFilterAllItems = [];  // current item list for sub-chart filter
 // Derived-data cache — invalidated whenever rawEntries changes
 let _cache = { valid: false, employees: null, cases: null, clients: null, months: null };
@@ -105,7 +107,7 @@ function handleFile(file) {
                 }
 
                 // Use header row (not first data row) for file-type detection — first data row may have empty cells
-                const headerRow = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 })[0] || [];
+                const headerRow = getSheetHeaderRow(wb.Sheets[wb.SheetNames[0]]);
                 if (name.includes('עובדים')) {
                     if (headerRow.includes('קבוצה') && headerRow.includes('עובד')) {
                         importEmployeeGroups(wb);
@@ -155,7 +157,7 @@ function importEmployeeGroups(wb) {
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet);
     // Read actual header row to avoid false negatives when first data row has empty cells
-    const headerRow = XLSX.utils.sheet_to_json(sheet, { header: 1 })[0] || [];
+    const headerRow = getSheetHeaderRow(sheet);
 
     // Check 15: Required columns
     if (!rows.length && !headerRow.length) { alert('קובץ קבוצות עובדים ריק'); return; }
@@ -242,7 +244,7 @@ function importCaseGroups(wb) {
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet);
     // Read actual header row (row 1) to avoid false negatives when first data row has empty cells
-    const headerRow = XLSX.utils.sheet_to_json(sheet, { header: 1 })[0] || [];
+    const headerRow = getSheetHeaderRow(sheet);
 
     if (!rows.length && !headerRow.length) { alert('קובץ קבוצות תיקים ריק'); return; }
     if (!headerRow.includes('קבוצה')) {
@@ -871,6 +873,8 @@ function rebuildEmployeeFilter() {
         if (selectedEmployeeGroups.size === 0) allGroups.forEach(g => selectedEmployeeGroups.add(g));
 
         if (filterLabel) filterLabel.textContent = 'קבוצות עובדים להצגה:';
+        _empFilterAllItems = allGroups;
+        _empFilterSelectedSet = selectedEmployeeGroups;
         renderEmpFilterList(allGroups, '', selectedEmployeeGroups);
         updateEmpFilterTrigger(allGroups, selectedEmployeeGroups);
     } else {
@@ -882,6 +886,8 @@ function rebuildEmployeeFilter() {
         if (selectedEmployees.size === 0) allEmps.forEach(e => selectedEmployees.add(e));
 
         if (filterLabel) filterLabel.textContent = 'עובדים להצגה:';
+        _empFilterAllItems = allEmps;
+        _empFilterSelectedSet = selectedEmployees;
         renderEmpFilterList(allEmps, '', selectedEmployees);
         updateEmpFilterTrigger(allEmps, selectedEmployees);
     }
@@ -2674,6 +2680,10 @@ function downloadExcel(data, filename) {
     XLSX.writeFile(wb, filename);
 }
 
+function getSheetHeaderRow(sheet) {
+    return XLSX.utils.sheet_to_json(sheet, { header: 1 })[0] || [];
+}
+
 function esc(str) {
     if (!str) return '';
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -2748,7 +2758,7 @@ initXfDropdown('#case-filter-trigger', '#case-filter-dropdown', '#case-filter-se
     (term) => renderCaseFilterList(_caseFilterAllItems, term));
 
 initXfDropdown('#emp-filter-trigger', '#emp-filter-dropdown', '#emp-filter-search',
-    (term) => renderEmpFilterList(getAllEmployees(), term));
+    (term) => renderEmpFilterList(_empFilterAllItems, term, _empFilterSelectedSet));
 
 initXfDropdown('#sub-chart-filter-trigger', '#sub-chart-filter-dropdown', '#sub-chart-filter-search',
     (term) => renderSubChartFilterList(_subChartFilterAllItems, term));
