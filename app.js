@@ -234,7 +234,6 @@ function importEmployeeGroups(wb) {
     phantomEmployees = newPhantomEmps;
     renderEmployeeGroups();
     renderPivot();
-    console.log(`Imported ${Object.keys(newGroups).length} employee groups, ${phantomEmployees.length} phantom employees`);
 }
 
 // ============================================================
@@ -332,7 +331,6 @@ function importCaseGroups(wb) {
     renderCaseGroups();
     rebuildCaseFilter();
     renderPivot();
-    console.log(`Imported ${Object.keys(newGroups).length} case groups, ${phantomCases.length} phantom cases`);
 }
 
 // ============================================================
@@ -385,7 +383,6 @@ function parseReport(rows) {
     const headerRow = rows[headerRowIdx];
     const headerTexts = headerRow.map(c => c ? String(c).trim() : '');
     const isFormat2 = headerTexts.includes('חשבון') && !headerTexts.includes('לקוח');
-    console.log('Detected format:', isFormat2 ? 'Format 2 (לפי לקוח/תיק)' : 'Format 1 (ByLawyerDate)');
 
     // Check 5: Missing critical columns
     const requiredCols = ['עובד', 'תאריך'];
@@ -407,7 +404,6 @@ function parseReport(rows) {
         newEntries = parseReportFormat1(rows, headerRowIdx, headerRow);
     }
 
-    console.log('Parsed new entries:', newEntries.length);
     // Check 6: No data rows
     if (newEntries.length === 0) { alert('לא נמצאו רשומות תקינות בקובץ.\nוודאו שהקובץ מכיל שורות נתונים מתחת לשורת הכותרת.'); return; }
 
@@ -577,7 +573,6 @@ function parseReportFormat1(rows, headerRowIdx, headerRow) {
         const cell = headerRow[j];
         if (cell && headerNames[cell]) colMap[headerNames[cell]] = j;
     }
-    console.log('Format 1 - Header row:', headerRowIdx, 'Column map:', colMap);
 
     let currentEmployee = null;
     let currentDate = null;
@@ -645,7 +640,6 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
         const cell = headerRow[j];
         if (cell && headerNames[String(cell).trim()]) colMap[headerNames[String(cell).trim()]] = j;
     }
-    console.log('Format 2 - Header row:', headerRowIdx, 'Column map:', colMap);
 
     let currentClient = '';
     let currentCase = '';
@@ -738,16 +732,6 @@ function parseReportFormat2(rows, headerRowIdx, headerRow) {
         emptySections.push(lastSectionHeader.label);
     }
 
-    // Check 13: Warn about orphan rows
-    if (orphanRows > 0) {
-        console.warn(`Format 2: ${orphanRows} שורות נתונים לפני כותרת לקוח/תיק ראשונה`);
-    }
-
-    // Check 14: Warn about empty sections
-    if (emptySections.length > 0) {
-        console.warn('Format 2: Empty sections:', emptySections);
-    }
-
     return entries;
 }
 
@@ -778,7 +762,7 @@ function rebuildCaseFilter() {
         }
         if (caseFilterMode === 'case') {
             items = getAllCases().map(c => c.key);
-            labelFn = (k) => esc(caseLabel(k));
+            labelFn = (k) => caseLabel(k);
             if (filterLabel) filterLabel.textContent = 'תיקים להצגה:';
         } else if (caseFilterMode === 'client') {
             items = getAllClients();
@@ -811,7 +795,7 @@ function renderCaseFilterList(allItems, searchTerm, labelFn = null) {
     const list = $('#case-filter-list');
     if (!list) return;
     const term = searchTerm.toLowerCase();
-    const displayLabel = labelFn || ((i) => esc(i));
+    const displayLabel = labelFn || ((i) => i);
     const filtered = term ? allItems.filter(i => displayLabel(i).toLowerCase().includes(term)) : allItems;
 
     const allChecked = allItems.length > 0 && allItems.every(i => selectedCaseGroups.has(i));
@@ -837,7 +821,7 @@ function renderCaseFilterList(allItems, searchTerm, labelFn = null) {
     filtered.forEach(item => {
         const li = document.createElement('li');
         li.className = 'xf-item';
-        li.innerHTML = `<label><input type="checkbox" /><span>${displayLabel(item)}</span></label>`;
+        li.innerHTML = `<label><input type="checkbox" /><span>${esc(displayLabel(item))}</span></label>`;
         const cb = li.querySelector('input');
         cb.checked = selectedCaseGroups.has(item);
         cb.addEventListener('change', () => {
@@ -1596,8 +1580,14 @@ function renderPivot() {
             empGroupLabels.forEach(eg => { subBarData[r][eg] = {}; });
         });
     } else if (colMode === 'months') {
-        // Individual employees as "groups" for stacked bar
-        empGMap = null;
+        // No employee groups defined — treat each individual employee as their own group
+        empGMap = {};
+        getAllEmployees().forEach(emp => { empGMap[emp] = emp; });
+        empGroupLabels = getAllEmployees().slice().sort();
+        rowKeys.forEach(r => {
+            subBarData[r] = {};
+            empGroupLabels.forEach(eg => { subBarData[r][eg] = {}; });
+        });
     }
 
     // --- Single pass: build pivot data + subBarData ---
