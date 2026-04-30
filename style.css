@@ -132,6 +132,43 @@ main {
     font-size: 0.85rem;
 }
 
+.empty-state-card {
+    text-align: center;
+    padding: 2.5rem 1.5rem;
+}
+
+.empty-state-card h2 {
+    font-family: var(--font-heading);
+    color: var(--navy);
+    font-size: 1.4rem;
+    margin-bottom: 0.6rem;
+}
+
+.empty-state-card p {
+    color: var(--text-light);
+    font-size: 0.95rem;
+    margin-bottom: 0.3rem;
+}
+
+.empty-state-card .empty-state-files {
+    font-size: 0.85rem;
+    margin-top: 0.4rem;
+}
+
+.control-hint {
+    color: var(--text-light);
+    font-size: 0.75rem;
+    line-height: 1.3;
+    margin-top: 0.15rem;
+}
+
+.tab-help {
+    color: var(--text-light);
+    font-size: 0.85rem;
+    line-height: 1.45;
+    margin: 0 0 1rem 0;
+}
+
 .upload-area input[type="file"] {
     position: absolute;
     inset: 0;
@@ -209,8 +246,13 @@ main {
     color: var(--white);
 }
 
-.toggle-btn:hover:not(.active) {
+.toggle-btn:hover:not(.active):not(:disabled) {
     background: var(--gray-100);
+}
+
+.toggle-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
 /* Checkbox label */

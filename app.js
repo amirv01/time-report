@@ -487,10 +487,18 @@ function parseReport(rows) {
 
     // Update date filters based on all current entries
     updateDateFilters();
+    // Reset selections so newly-introduced employees/cases/groups are visible by default
+    selectedEmployees.clear();
+    selectedEmployeeGroups.clear();
+    selectedCaseGroups.clear();
+    selectedSubCharts.clear();
+    // Sync control availability (incl. case-group-mode) before filters are built
+    updateGroupAvailability();
     rebuildCaseFilter();
     rebuildEmployeeFilter();
 
     try {
+        $('#empty-state').classList.add('hidden');
         $('#controls-section').classList.remove('hidden');
         $('#tabs-section').classList.remove('hidden');
         showTab('pivot');
@@ -1011,7 +1019,7 @@ function getFilteredEntries() {
         const empGroupMap = {};
         Object.entries(employeeGroups).forEach(([g, members]) => members.forEach(m => { empGroupMap[m] = g; }));
         entries = entries.filter(e => {
-            const group = empGroupMap[e.employee] || (ungroupedMode === 'individual' ? e.employee : 'אחר');
+            const group = empGroupMap[e.employee] || 'אחר';
             return selectedEmployeeGroups.has(group);
         });
     } else {
@@ -1153,20 +1161,52 @@ $('#col-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
         $('#col-mode-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         colMode = btn.dataset.value;
-        // Enable/disable group employees checkbox
-        const cb = $('#group-employees-cb');
-        cb.disabled = (colMode !== 'employees');
-        if (colMode !== 'employees') {
-            cb.checked = false;
-            groupEmployees = false;
-        }
+        updateGroupAvailability();
         debouncedRenderPivot();
     });
 });
 
+function updateGroupAvailability() {
+    const hasEmpGroups = Object.keys(employeeGroups).length > 0;
+    const empCb = $('#group-employees-cb');
+    const empHint = $('#group-employees-hint');
+    if (empCb) {
+        empCb.disabled = !hasEmpGroups || colMode !== 'employees';
+        if (empCb.disabled && empCb.checked) {
+            empCb.checked = false;
+            groupEmployees = false;
+        }
+    }
+    if (empHint) empHint.classList.toggle('hidden', hasEmpGroups);
+
+    const hasCaseGroups = Object.keys(caseGroups).length > 0;
+    const caseGroupsBtn = $('#case-group-mode-toggle [data-value="groups"]');
+    const caseHint = $('#case-groups-hint');
+    if (caseGroupsBtn) caseGroupsBtn.disabled = !hasCaseGroups;
+    if (!hasCaseGroups && caseGroupMode === 'groups') {
+        caseGroupMode = 'none';
+        $('#case-group-mode-toggle').querySelectorAll('.toggle-btn').forEach(b =>
+            b.classList.toggle('active', b.dataset.value === 'none'));
+    }
+    if (caseHint) caseHint.classList.toggle('hidden', hasCaseGroups);
+
+    updateUngroupedToggleVisibility();
+}
+
+function updateUngroupedToggleVisibility() {
+    const ungroupedToggle = $('#ungrouped-toggle').closest('.control-group');
+    if (!ungroupedToggle) return;
+    const hasCaseGroups = Object.keys(caseGroups).length > 0;
+    const hasEmpGroups = Object.keys(employeeGroups).length > 0;
+    const caseGrouping = caseGroupMode === 'groups' && hasCaseGroups;
+    const empGrouping = colMode === 'employees' && groupEmployees && hasEmpGroups;
+    ungroupedToggle.style.display = (caseGrouping || empGrouping) ? '' : 'none';
+}
+
 // Group employees checkbox
 $('#group-employees-cb').addEventListener('change', (e) => {
     groupEmployees = e.target.checked;
+    updateUngroupedToggleVisibility();
     rebuildEmployeeFilter();
     debouncedRenderPivot();
 });
@@ -1177,9 +1217,7 @@ $('#case-group-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
         $('#case-group-mode-toggle').querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         caseGroupMode = btn.dataset.value;
-        // Show/hide ungrouped toggle — only relevant in 'groups' mode
-        const ungroupedToggle = $('#ungrouped-toggle').closest('.control-group');
-        if (ungroupedToggle) ungroupedToggle.style.display = caseGroupMode === 'groups' ? '' : 'none';
+        updateUngroupedToggleVisibility();
         if (caseGroupMode === 'none') caseFilterMode = 'case'; // reset sub-filter mode
         selectedCaseGroups.clear(); // reset filter for new mode
         rebuildCaseFilter();
@@ -1296,6 +1334,7 @@ function renderEmployeeGroups() {
     ).join('');
 
     setupDragDrop('emp');
+    updateGroupAvailability();
 }
 
 // ============================================================
@@ -1342,6 +1381,7 @@ function renderCaseGroups() {
     ).join('');
 
     setupDragDrop('case');
+    updateGroupAvailability();
 }
 
 // ============================================================
