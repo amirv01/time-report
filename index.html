@@ -254,6 +254,27 @@
         </section>
     </main>
 
+    <!-- Loading overlay (shown during file read/parse) -->
+    <div id="loading-overlay" class="loading-overlay hidden" aria-live="polite" aria-busy="true">
+        <div class="loading-card">
+            <div class="spinner"></div>
+            <div class="loading-title" id="loading-title">טוען...</div>
+            <div class="loading-subtitle" id="loading-subtitle"></div>
+        </div>
+    </div>
+
+    <!-- Confirmation modal -->
+    <div id="confirm-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+        <div class="modal-card">
+            <h3 id="confirm-modal-title"></h3>
+            <p id="confirm-modal-message"></p>
+            <div class="modal-actions">
+                <button class="btn" id="confirm-modal-ok">אישור</button>
+                <button class="btn btn-secondary" id="confirm-modal-cancel">ביטול</button>
+            </div>
+        </div>
+    </div>
+
     <footer>
         <p>כלי פנימי לניתוח דוחות שעות</p>
         <p class="footer-meta">&copy; Amir Vang 2026 | <span>מבקרים: </span><span id="visitor-count">...</span></p>

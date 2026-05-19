@@ -71,74 +71,137 @@ function handleFiles(fileList) {
     }
 }
 
-function handleFile(file) {
+// Loading overlay + modal helpers
+function showLoading(title, subtitle = '') {
+    $('#loading-title').textContent = title;
+    $('#loading-subtitle').textContent = subtitle;
+    $('#loading-overlay').classList.remove('hidden');
+}
+function updateLoading(title, subtitle) {
+    if (title !== undefined) $('#loading-title').textContent = title;
+    if (subtitle !== undefined) $('#loading-subtitle').textContent = subtitle;
+}
+function hideLoading() {
+    $('#loading-overlay').classList.add('hidden');
+}
+// Ensure the browser paints the overlay before we run sync work on the main thread.
+// Two RAFs is the reliable pattern: first RAF schedules paint, second fires after it commits.
+function yieldPaint() {
+    return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+}
+function confirmModal(title, message, confirmText = 'אישור', cancelText = 'ביטול') {
     return new Promise((resolve) => {
-        const name = file.name;
-
-        // Check 1: File extension
-        const ext = name.split('.').pop().toLowerCase();
-        if (!['xlsx', 'xls', 'xlsm'].includes(ext)) {
-            alert(`סוג הקובץ "${ext}" אינו נתמך.\nיש להעלות קבצי Excel בלבד (xlsx, xls, xlsm).`);
-            resolve(); return;
-        }
-
-        // Check 2: File size
-        const sizeMB = file.size / (1024 * 1024);
-        if (sizeMB > 10) {
-            if (!confirm(`הקובץ "${name}" גדול (${sizeMB.toFixed(1)} MB).\nעיבוד קובץ גדול עלול להיות איטי.\n\nלהמשיך?`)) { resolve(); return; }
-        }
-
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            try {
-                const data = new Uint8Array(e.target.result);
-                const wb = XLSX.read(data, { type: 'array', cellDates: true });
-
-                // Check 3: Empty file
-                if (!wb.SheetNames.length) {
-                    alert(`הקובץ "${name}" ריק — לא נמצאו גליונות.`);
-                    resolve(); return;
-                }
-                const sheet = wb.Sheets[wb.SheetNames[0]];
-                const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
-                if (range.e.r === 0 && range.e.c === 0 && !sheet['A1']) {
-                    alert(`הקובץ "${name}" ריק — הגליון הראשון אינו מכיל נתונים.`);
-                    resolve(); return;
-                }
-
-                // Use header row (not first data row) for file-type detection — first data row may have empty cells
-                const headerRow = getSheetHeaderRow(wb.Sheets[wb.SheetNames[0]]);
-                if (name.includes('עובדים')) {
-                    if (headerRow.includes('קבוצה') && headerRow.includes('עובד')) {
-                        importEmployeeGroups(wb);
-                        showFileStatus(name, 'קבוצות עובדים נטענו');
-                    } else {
-                        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
-                        parseReport(rows);
-                        showFileStatus(name, 'דוח שעות נטען');
-                    }
-                } else if (name.includes('תיקים')) {
-                    if (headerRow.includes('קבוצה')) {
-                        importCaseGroups(wb);
-                        showFileStatus(name, 'קבוצות תיקים נטענו');
-                    } else {
-                        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
-                        parseReport(rows);
-                        showFileStatus(name, 'דוח שעות נטען');
-                    }
-                } else {
-                    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
-                    parseReport(rows);
-                    showFileStatus(name, 'דוח שעות נטען');
-                }
-            } catch (err) {
-                console.error('Error reading file:', err);
-                alert(`שגיאה בקריאת הקובץ "${name}": ${err.message}`);
-            }
-            resolve();
+        $('#confirm-modal-title').textContent = title;
+        $('#confirm-modal-message').textContent = message;
+        const ok = $('#confirm-modal-ok');
+        const cancel = $('#confirm-modal-cancel');
+        ok.textContent = confirmText;
+        cancel.textContent = cancelText;
+        const modal = $('#confirm-modal');
+        modal.classList.remove('hidden');
+        const cleanup = (result) => {
+            modal.classList.add('hidden');
+            ok.removeEventListener('click', onOk);
+            cancel.removeEventListener('click', onCancel);
+            resolve(result);
         };
+        const onOk = () => cleanup(true);
+        const onCancel = () => cleanup(false);
+        ok.addEventListener('click', onOk);
+        cancel.addEventListener('click', onCancel);
+    });
+}
+function readFileAsArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = () => reject(reader.error || new Error('שגיאה לא ידועה בקריאת הקובץ'));
         reader.readAsArrayBuffer(file);
     });
+}
+
+async function handleFile(file) {
+    const name = file.name;
+
+    // Check 1: File extension
+    const ext = name.split('.').pop().toLowerCase();
+    if (!['xlsx', 'xls', 'xlsm'].includes(ext)) {
+        alert(`סוג הקובץ "${ext}" אינו נתמך.\nיש להעלות קבצי Excel בלבד (xlsx, xls, xlsm).`);
+        return;
+    }
+
+    // Check 2: File size — warn for very large files
+    const sizeMB = file.size / (1024 * 1024);
+    if (sizeMB > 10) {
+        const ok = await confirmModal(
+            'קובץ גדול',
+            `הקובץ "${name}" גדול (${sizeMB.toFixed(1)} MB).\nעיבוד עלול לקחת כמה שניות. להמשיך?`,
+            'כן, להמשיך',
+            'ביטול'
+        );
+        if (!ok) return;
+    }
+
+    showLoading('קורא את הקובץ...', name);
+    await yieldPaint();
+
+    try {
+        const buf = await readFileAsArrayBuffer(file);
+
+        updateLoading('מנתח את התוכן...', name);
+        await yieldPaint();
+
+        const data = new Uint8Array(buf);
+        const wb = XLSX.read(data, { type: 'array', cellDates: true });
+
+        // Check 3: Empty file
+        if (!wb.SheetNames.length) {
+            hideLoading();
+            alert(`הקובץ "${name}" ריק — לא נמצאו גליונות.`);
+            return;
+        }
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+        if (range.e.r === 0 && range.e.c === 0 && !sheet['A1']) {
+            hideLoading();
+            alert(`הקובץ "${name}" ריק — הגליון הראשון אינו מכיל נתונים.`);
+            return;
+        }
+
+        updateLoading('מעבד נתונים...', name);
+        await yieldPaint();
+
+        // Use header row (not first data row) for file-type detection — first data row may have empty cells
+        const headerRow = getSheetHeaderRow(wb.Sheets[wb.SheetNames[0]]);
+        if (name.includes('עובדים')) {
+            if (headerRow.includes('קבוצה') && headerRow.includes('עובד')) {
+                importEmployeeGroups(wb);
+                showFileStatus(name, 'קבוצות עובדים נטענו');
+            } else {
+                const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+                parseReport(rows);
+                showFileStatus(name, 'דוח שעות נטען');
+            }
+        } else if (name.includes('תיקים')) {
+            if (headerRow.includes('קבוצה')) {
+                importCaseGroups(wb);
+                showFileStatus(name, 'קבוצות תיקים נטענו');
+            } else {
+                const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+                parseReport(rows);
+                showFileStatus(name, 'דוח שעות נטען');
+            }
+        } else {
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+            parseReport(rows);
+            showFileStatus(name, 'דוח שעות נטען');
+        }
+    } catch (err) {
+        console.error('Error reading file:', err);
+        alert(`שגיאה בקריאת הקובץ "${name}": ${err.message}`);
+    } finally {
+        hideLoading();
+    }
 }
 
 const _fileStatusHistory = [];
