@@ -1274,6 +1274,12 @@ $('#group-employees-cb').addEventListener('change', (e) => {
     debouncedRenderPivot();
 });
 
+// Hide pivot table toggle — when on, the table is hidden and the view jumps straight to the graphs
+$('#hide-pivot-table-cb').addEventListener('change', (e) => {
+    const wrapper = $('#pivot-table-wrapper');
+    if (wrapper) wrapper.classList.toggle('hidden', e.target.checked);
+});
+
 // Case group mode toggle (none/client/groups)
 $('#case-group-mode-toggle').querySelectorAll('.toggle-btn').forEach(btn => {
     btn.addEventListener('click', () => {

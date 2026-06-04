@@ -609,6 +609,22 @@ main {
 .btn-group {
     display: flex;
     gap: 0.5rem;
+    align-items: center;
+}
+
+/* Title cluster: h2 and inline toggle sit together at the start of the section header */
+.section-header-title {
+    display: flex;
+    align-items: center;
+    gap: 1.2rem;
+}
+
+/* Inline toggle (e.g., "הסתר טבלת סיכום") sitting next to the section title */
+.checkbox-label.inline-toggle {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text);
+    user-select: none;
 }
 
 .section-header {
