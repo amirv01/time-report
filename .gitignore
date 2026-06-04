@@ -1,3 +1,6 @@
 serve.js
 serve.py
 .claude/
+dist/
+.build-cache/
+sample data/
