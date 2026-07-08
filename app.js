@@ -2560,8 +2560,11 @@ async function generatePdfReport(entries, reportTitle) {
         [...tr.querySelectorAll('td')].map(td => td.textContent.trim())
     );
 
-    // Build a plain table (no thead/tbody) to avoid rendering order issues
-    function buildPdfTable(fontSize) {
+    // Build a plain table (no thead/tbody) for a slice of the body rows.
+    // rowStart/rowEnd bound the slice; header row is always included.
+    function buildPdfTable(fontSize, rowStart, rowEnd) {
+        if (rowStart == null) rowStart = 0;
+        if (rowEnd == null) rowEnd = bodyRowsData.length;
         const tbl = document.createElement('table');
         tbl.style.cssText = `
             width: 100%; border-collapse: collapse;
@@ -2570,7 +2573,7 @@ async function generatePdfReport(entries, reportTitle) {
         `;
         const cellStyle = `padding: 3px 5px; border: 1px solid #ccc; text-align: center; white-space: nowrap; font-size: ${fontSize}px;`;
 
-        // Header row
+        // Header row (repeated on every page's slice)
         const hRow = document.createElement('tr');
         headerCells.forEach(text => {
             const td = document.createElement('td');
@@ -2580,8 +2583,9 @@ async function generatePdfReport(entries, reportTitle) {
         });
         tbl.appendChild(hRow);
 
-        // Body rows
-        bodyRowsData.forEach((cells, rowIdx) => {
+        // Body rows in the requested slice
+        for (let rowIdx = rowStart; rowIdx < rowEnd; rowIdx++) {
+            const cells = bodyRowsData[rowIdx];
             const tr = document.createElement('tr');
             const isLastRow = rowIdx === bodyRowsData.length - 1;
             cells.forEach(text => {
@@ -2595,7 +2599,7 @@ async function generatePdfReport(entries, reportTitle) {
                 tr.appendChild(td);
             });
             tbl.appendChild(tr);
-        });
+        }
 
         return tbl;
     }
@@ -2607,26 +2611,59 @@ async function generatePdfReport(entries, reportTitle) {
     `;
     _addTemp(tableContainer);
 
-    // Shrink font until the table fits within the page
+    // === Font sizing: shrink only for WIDTH fit, floor at 7pt so text stays legible ===
+    // (Height is no longer part of this loop; overflow across pages is handled by
+    // pagination below. This is what fixes the "microtext for tall tables" bug.)
+    const MIN_FONT = 7;
     let tableFontSize = 11;
-    const mmPerPx = contentW / targetPxW;
-    for (let attempt = 0; attempt < 12; attempt++) {
+    for (let attempt = 0; attempt < 8; attempt++) {
         tableContainer.innerHTML = '';
-        const tbl = buildPdfTable(tableFontSize);
-        tableContainer.appendChild(tbl);
-        const tblW = tbl.scrollWidth;
-        const tblH = tbl.scrollHeight;
-        const fitsWidth = tblW <= targetPxW + 2;
-        const renderedH = (targetPxW / Math.max(tblW, 1)) * tblH * mmPerPx;
-        const fitsHeight = renderedH <= availableH;
-        if (fitsWidth && fitsHeight) break;
+        const probe = buildPdfTable(tableFontSize);
+        tableContainer.appendChild(probe);
+        if (probe.scrollWidth <= targetPxW + 2) break;
         tableFontSize -= 0.5;
-        if (tableFontSize < 5) break;
+        if (tableFontSize < MIN_FONT) { tableFontSize = MIN_FONT; break; }
     }
 
-    const tableCanvas = await captureElement(tableContainer, 2);
+    // === Measure header + typical body-row heights at the chosen font ===
+    // The container currently holds the last probe (all rows) at the chosen font size.
+    const probeRows = tableContainer.querySelectorAll('tr');
+    const headerH_px = probeRows[0]?.offsetHeight || 20;
+    let sampleH = 0;
+    const nSamples = Math.min(probeRows.length - 1, 5);
+    for (let i = 1; i <= nSamples; i++) sampleH += probeRows[i].offsetHeight;
+    const rowH_px = nSamples > 0 ? (sampleH / nSamples) : headerH_px;
+
+    // === Compute how many rows fit per page ===
+    // pxPerMm ≈ 3.78 (96 DPI). Available height differs on page 1 (title above it)
+    // vs subsequent pages (full page, minus margins and footer strip).
+    const pxPerMm = targetPxW / contentW;
+    const fullPageAvailH = pageH - margin * 2 - 10;
+    const rowsPerFirstPage = Math.max(1, Math.floor((availableH * pxPerMm - headerH_px) / Math.max(rowH_px, 1)));
+    const rowsPerFullPage  = Math.max(1, Math.floor((fullPageAvailH * pxPerMm - headerH_px) / Math.max(rowH_px, 1)));
+
+    // === Render row chunks; each chunk is header + a slice of the body ===
+    let rowStart = 0;
+    let isFirstChunk = true;
+    while (rowStart < bodyRowsData.length) {
+        const rowsThisPage = isFirstChunk ? rowsPerFirstPage : rowsPerFullPage;
+        const rowEnd = Math.min(bodyRowsData.length, rowStart + rowsThisPage);
+
+        tableContainer.innerHTML = '';
+        tableContainer.appendChild(buildPdfTable(tableFontSize, rowStart, rowEnd));
+        const chunkCanvas = await captureElement(tableContainer, 2);
+
+        const maxHForChunk = isFirstChunk ? availableH : fullPageAvailH;
+        addImage(chunkCanvas, contentW, maxHForChunk);
+
+        rowStart = rowEnd;
+        if (rowStart < bodyRowsData.length) {
+            doc.addPage();
+            curY = margin;
+        }
+        isFirstChunk = false;
+    }
     _removeTemp(tableContainer);
-    addImage(tableCanvas, contentW, availableH);
 
     // --- Charts ---
 
