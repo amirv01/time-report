@@ -302,6 +302,11 @@ main {
     gap: 0.3rem;
 }
 
+/* Extra breathing room above the non-billable toggle so it reads as a distinct option */
+.control-group.non-billable-row {
+    margin-top: 0.6rem;
+}
+
 .control-group label {
     font-size: 0.82rem;
     font-weight: 600;

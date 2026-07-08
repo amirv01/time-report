@@ -29,6 +29,22 @@ let _caseFilterAllItems = [];      // current item list for case filter
 let _empFilterAllItems = [];       // current item list for employee filter
 let _empFilterSelectedSet = null;  // reference to active employee selected set
 let _subChartFilterAllItems = [];  // current item list for sub-chart filter
+let showNonBillable = false;       // when off, filter out the "999" client everywhere
+// The client cell in the reports looks like "999 - Non Billable Hours". We match on
+// the leading run of digits so "9999" or "199" don't accidentally get filtered too.
+// If your reports use a different identifier, change NON_BILLABLE_CLIENT_ID.
+const NON_BILLABLE_CLIENT_ID = '999';
+function isNonBillableClient(client) {
+    if (!client) return false;
+    const m = String(client).trim().match(/^(\d+)/);
+    return !!m && m[1] === NON_BILLABLE_CLIENT_ID;
+}
+// View of rawEntries that respects the non-billable toggle. Every derived query
+// (getAllClients/getAllCases/getFilteredEntries) reads from here so the toggle
+// takes effect before any user filter and hides the client from every dropdown.
+function getBaseEntries() {
+    return showNonBillable ? rawEntries : rawEntries.filter(e => !isNonBillableClient(e.client));
+}
 // Derived-data cache — invalidated whenever rawEntries changes
 let _cache = { valid: false, employees: null, cases: null, clients: null, months: null };
 function invalidateCache() { _cache.valid = false; }
@@ -834,22 +850,22 @@ function rebuildCaseFilter() {
         if (caseFilterMode === 'case') {
             items = getAllCases().map(c => c.key);
             labelFn = (k) => caseLabel(k);
-            if (filterLabel) filterLabel.textContent = 'תיקים להצגה:';
+            if (filterLabel) filterLabel.textContent = 'סינון תיקים להצגה:';
         } else if (caseFilterMode === 'client') {
             items = getAllClients();
-            if (filterLabel) filterLabel.textContent = 'לקוחות להצגה:';
+            if (filterLabel) filterLabel.textContent = 'סינון לקוחות להצגה:';
         } else { // 'groups'
             items = [...Object.keys(caseGroups), 'אחר'];
-            if (filterLabel) filterLabel.textContent = 'קבוצות תיקים להצגה:';
+            if (filterLabel) filterLabel.textContent = 'סינון קבוצות תיקים להצגה:';
         }
     } else {
         if (modeToggle) modeToggle.classList.add('hidden');
         if (caseGroupMode === 'client') {
             items = getAllClients();
-            if (filterLabel) filterLabel.textContent = 'לקוחות להצגה:';
+            if (filterLabel) filterLabel.textContent = 'סינון לקוחות להצגה:';
         } else {
             items = [...Object.keys(caseGroups), 'אחר'];
-            if (filterLabel) filterLabel.textContent = 'קבוצות תיקים להצגה:';
+            if (filterLabel) filterLabel.textContent = 'סינון קבוצות תיקים להצגה:';
         }
     }
 
@@ -1062,7 +1078,7 @@ function formatMonth(d) {
 }
 
 function getFilteredEntries() {
-    let entries = rawEntries;
+    let entries = getBaseEntries();
     const from = $('#date-from').value;
     const to = $('#date-to').value;
     const hasDateFilter = from || to;
@@ -1097,7 +1113,7 @@ function _buildCache() {
     const cases = new Map();
     const clients = new Set();
     const months = new Set();
-    for (const e of rawEntries) {
+    for (const e of getBaseEntries()) {
         if (e.employee) employees.add(e.employee);
         if (!cases.has(e.caseKey)) cases.set(e.caseKey, { client: e.client, caseName: e.caseName, key: e.caseKey });
         if (e.client && e.client.trim()) clients.add(e.client);
@@ -1323,6 +1339,41 @@ $('#clear-dates').addEventListener('click', () => {
     $('#date-to').value = '';
     renderCleanTable();
     debouncedRenderPivot();
+});
+
+// Show/hide non-billable client (999). Toggling changes the set of visible clients,
+// cases, employees, and months, so we invalidate the derived-data cache and rebuild
+// the case+employee filter dropdowns so removed items disappear from selection state.
+// When turning ON, newly-visible items are auto-added to the active selection sets
+// so the user sees the data they just enabled without re-checking anything.
+$('#show-non-billable-cb').addEventListener('change', (e) => {
+    const turningOn = e.target.checked;
+
+    // Snapshot the currently-visible items (pre-toggle) so we can diff after flipping
+    const prevClients = turningOn ? new Set(getAllClients()) : null;
+    const prevCaseKeys = turningOn ? new Set(getAllCases().map(c => c.key)) : null;
+    const prevEmployees = turningOn ? new Set(getAllEmployees()) : null;
+
+    showNonBillable = turningOn;
+    invalidateCache();
+
+    if (turningOn) {
+        // Newly-visible clients / case keys go into selectedCaseGroups. It may hold
+        // client names, case keys, or group names depending on caseGroupMode/caseFilterMode;
+        // rebuildCaseFilter's validSet check filters out anything irrelevant to the current mode.
+        getAllClients().forEach(c => { if (!prevClients.has(c)) selectedCaseGroups.add(c); });
+        getAllCases().forEach(c => { if (!prevCaseKeys.has(c.key)) selectedCaseGroups.add(c.key); });
+        // Newly-visible employees (someone who only booked non-billable hours in this period)
+        getAllEmployees().forEach(emp => { if (!prevEmployees.has(emp)) selectedEmployees.add(emp); });
+    }
+    // When turning OFF, rebuildCaseFilter naturally drops the now-invalid client/case entries.
+
+    updateGroupAvailability();
+    rebuildCaseFilter();
+    rebuildEmployeeFilter();
+    updateDateFilters();
+    renderCleanTable();
+    renderPivot();
 });
 
 // ============================================================
@@ -2420,6 +2471,24 @@ async function captureElement(el, scale) {
     return canvas;
 }
 
+// Wait for an <img> to finish decoding its src (typically a data URI).
+// Rejects on decode failure (missing onerror was previously causing PDF generation
+// to hang indefinitely on large canvases where the data URI failed to decode),
+// and rejects after a timeout so an unexpected async gap can't freeze the pipeline.
+function awaitImageLoad(img, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+        if (img.complete && img.naturalWidth > 0) return resolve();
+        let done = false;
+        const finish = (fn) => (arg) => { if (done) return; done = true; clearTimeout(timer); fn(arg); };
+        const timer = setTimeout(
+            finish(() => reject(new Error('timeout בטעינת תמונה ליצירת הדוח'))),
+            timeoutMs
+        );
+        img.onload = finish(resolve);
+        img.onerror = finish(() => reject(new Error('כשלון בטעינת תמונה ליצירת הדוח (ייתכן שהקנבס גדול מדי)')));
+    });
+}
+
 async function generatePdfReport(entries, reportTitle) {
     const { jsPDF } = window.jspdf;
     // Track temp DOM elements for cleanup on error
@@ -2581,8 +2650,7 @@ async function generatePdfReport(entries, reportTitle) {
         img.style.cssText = 'width: 100%; display: block;';
         wrapper.appendChild(img);
         _addTemp(wrapper);
-        // Wait for image to load
-        await new Promise(r => { if (img.complete) r(); else img.onload = r; });
+        await awaitImageLoad(img);
         const compositeCanvas = await captureElement(wrapper, 2);
         _removeTemp(wrapper);
 
@@ -2636,7 +2704,7 @@ async function generatePdfReport(entries, reportTitle) {
                 img.src = cvs.toDataURL('image/png');
                 img.style.cssText = 'width: 100%; display: block;';
                 clone.appendChild(img);
-                await new Promise(r => { if (img.complete) r(); else img.onload = r; });
+                await awaitImageLoad(img);
             }
             return clone;
         }

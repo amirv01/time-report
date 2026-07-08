@@ -80,7 +80,7 @@
                         <small class="control-hint hidden" id="case-groups-hint">ניתן להגדיר קבוצות לתצוגה בלשונית 'קבוצות תיקים'</small>
                     </div>
                     <div class="control-group" id="case-filter-group">
-                        <label id="case-filter-label">קבוצות תיקים להצגה:</label>
+                        <label id="case-filter-label">סינון קבוצות תיקים להצגה:</label>
                         <div class="toggle-group hidden" id="case-filter-mode-toggle" style="margin-bottom:6px">
                             <button class="toggle-btn active" data-value="case">לפי תיק</button>
                             <button class="toggle-btn" data-value="client">לפי לקוח</button>
@@ -97,14 +97,7 @@
                 </div>
                 <!-- כללי -->
                 <div class="settings-panel">
-                    <h3>הגדרות לטבלת סיכום</h3>
-                    <div class="control-group">
-                        <label>ערך לסיכום:</label>
-                        <div class="toggle-group" id="value-toggle">
-                            <button class="toggle-btn active" data-value="billable">שעות חיוב</button>
-                            <button class="toggle-btn" data-value="work">שעות עבודה</button>
-                        </div>
-                    </div>
+                    <h3>הגדרות נוספות</h3>
                     <div class="control-group">
                         <label>סינון תאריכים:</label>
                         <div class="date-range">
@@ -112,6 +105,19 @@
                             <span>עד</span>
                             <input type="date" id="date-to" />
                             <button class="btn btn-small" id="clear-dates">נקה</button>
+                        </div>
+                    </div>
+                    <div class="control-group non-billable-row">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="show-non-billable-cb" />
+                            <span>הצג שעות לא לחיוב (לקוח 999)</span>
+                        </label>
+                    </div>
+                    <div class="control-group">
+                        <label>ערך לסיכום:</label>
+                        <div class="toggle-group" id="value-toggle">
+                            <button class="toggle-btn active" data-value="billable">שעות חיוב</button>
+                            <button class="toggle-btn" data-value="work">שעות עבודה</button>
                         </div>
                     </div>
                     <div class="control-group">
